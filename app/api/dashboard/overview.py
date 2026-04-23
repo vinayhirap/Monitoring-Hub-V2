@@ -1,3 +1,4 @@
+# monitoring-hub/app/api/dashboard/overview.py
 from fastapi import APIRouter
 from app.db import get_connection
 
@@ -21,6 +22,18 @@ def dashboard_overview():
         WHERE a.status = 'active'
         GROUP BY a.id
     """)
+
+    cursor.execute("""
+    SELECT
+      a.id,
+      a.account_name,
+      COUNT(DISTINCT CASE WHEN r.state = 'running' THEN r.id END) AS ec2_running,
+      COUNT(DISTINCT CASE WHEN r.resource_type = 'ec2' THEN r.id END) AS ec2_total,
+      ...
+    FROM aws_accounts a
+    LEFT JOIN resources r ON r.aws_account_id = a.id
+    ...
+   """) 
 
     rows = cursor.fetchall()
     cursor.close()

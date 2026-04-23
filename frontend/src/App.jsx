@@ -1,3 +1,4 @@
+// monitoring-hub/frontend/src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth }  from "./auth/AuthContext";
 import Layout            from "./components/Layout";

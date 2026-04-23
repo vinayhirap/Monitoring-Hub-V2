@@ -162,6 +162,10 @@ export default function Login() {
             <span className="login-hint-role admin">Admin</span>
             <code>admin</code> / <code>admin123</code>
           </div>
+            <div className="login-hint-row">
+            <span className="login-hint-role editor">Editor</span>
+            <code>editor</code> / <code>editor123</code>
+          </div>
           <div className="login-hint-row">
             <span className="login-hint-role viewer">Viewer</span>
             <code>viewer</code> / <code>viewer123</code>

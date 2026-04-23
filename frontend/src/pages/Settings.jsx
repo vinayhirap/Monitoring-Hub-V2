@@ -1,8 +1,9 @@
-﻿import { useState, useEffect, useCallback } from "react";
+﻿// monitoring-hub/frontend/src/pages/Settings.jsx
+import { useState, useEffect, useCallback } from "react";
 import "./Settings.css";
 
 const BASE = "http://localhost:8000";
-const ACCOUNT_ID = 3;  // ← single source of truth
+const ACCOUNT_ID = 3;
 
 const IDEAL = {
   CPUUtilization:           { warn:70,  crit:85,  unit:"%",   desc:"Sustained >85% = under-provisioned" },
@@ -10,7 +11,7 @@ const IDEAL = {
   VolumeQueueLength:        { warn:1,   crit:5,   unit:"ops", desc:">1 sustained = I/O bottleneck" },
   BurstBalance:             { warn:30,  crit:10,  unit:"%",   desc:"<10% = EBS throughput degraded" },
   HTTPCode_Target_5XX_Count:{ warn:5,   crit:20,  unit:"cnt", desc:"Server errors hitting users" },
-  HealthyHostCount:         { warn:1,   crit:0,   unit:"cnt", desc:"<1 = no healthy targets" },
+  HealthyHostCount:         { warn:0,   crit:0,   unit:"cnt", desc:"<1 = no healthy targets — 0 means healthy (none below threshold)" },
   FreeStorageSpace:         { warn:10,  crit:5,   unit:"GB",  desc:"<5GB = DB writes will halt" },
   DatabaseConnections:      { warn:80,  crit:95,  unit:"%",   desc:"% of max_connections limit" },
   Errors:                   { warn:1,   crit:5,   unit:"%",   desc:"Lambda invocation error rate" },
@@ -19,6 +20,10 @@ const IDEAL = {
   NetworkOut:               { warn:80,  crit:100, unit:"MB/s",desc:"Outbound saturation" },
 };
 
+// Metrics where lower warn threshold = healthier (inverted logic)
+const INVERTED_WARN = new Set(["HealthyHostCount", "BurstBalance", "FreeStorageSpace"]);
+const ONE_BOUNDARY = new Set(["HealthyHostCount", "StatusCheckFailed"]);
+
 const SVC_ICON  = { ec2:"🖥", ebs:"💾", alb:"⚖", rds:"🗄", lambda:"λ", s3:"🪣" };
 const SVC_COLOR = { ec2:"#00c7ff", ebs:"#38bdf8", alb:"#f472b6", rds:"#a78bfa", lambda:"#00e5a0", s3:"#fbbf24" };
 
@@ -26,7 +31,7 @@ export default function Settings() {
   const [thresholds,  setThresholds]  = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [saving,      setSaving]      = useState(null);
-  const [saveMsg,     setSaveMsg]     = useState({});   // { [id]: "ok"|"err" }
+  const [saveMsg,     setSaveMsg]     = useState({});
   const [checkResult, setCheckResult] = useState(null);
   const [checking,    setChecking]    = useState(false);
   const [emailOn,     setEmailOn]     = useState(false);
@@ -36,9 +41,7 @@ export default function Settings() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [t] = await Promise.all([
-        fetch(`${BASE}/api/settings/thresholds?account_id=${ACCOUNT_ID}`).then(r => r.json()),
-      ]);
+      const t = await fetch(`${BASE}/api/settings/thresholds?account_id=${ACCOUNT_ID}`).then(r => r.json());
       setThresholds(Array.isArray(t) ? t : []);
     } catch (e) {
       console.error("Settings load:", e);
@@ -49,7 +52,6 @@ export default function Settings() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Seed if empty
   useEffect(() => {
     if (!loading && thresholds.length === 0) {
       fetch(`${BASE}/api/settings/thresholds/seed?account_id=${ACCOUNT_ID}`, { method: "POST" })
@@ -66,7 +68,7 @@ export default function Settings() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          account_id:        ACCOUNT_ID,          // ← was hardcoded 1
+          account_id:        ACCOUNT_ID,
           metric_id:         t.metric_id,
           resource_type:     t.resource_type || t.service,
           warning_value:     parseFloat(t.warning_value),
@@ -89,7 +91,6 @@ export default function Settings() {
 
   async function toggleThreshold(t) {
     const newEnabled = t.enabled ? 0 : 1;
-    // Optimistic update
     setThresholds(prev => prev.map(x => x.id === t.id ? { ...x, enabled: newEnabled } : x));
     try {
       const res = await fetch(`${BASE}/api/settings/thresholds/${t.id}/toggle`, {
@@ -99,7 +100,6 @@ export default function Settings() {
       });
       if (!res.ok) throw new Error();
     } catch {
-      // Revert on failure
       setThresholds(prev => prev.map(x => x.id === t.id ? { ...x, enabled: t.enabled } : x));
     }
   }
@@ -163,17 +163,17 @@ export default function Settings() {
               onChange={e => setEmail(e.target.value)} disabled={!emailOn} />
           </div>
           <div className="efield">
-            <label>WEBHOOK URL <span className="opt">(optional — enables auto-send)</span></label>
+            <label>WEBHOOK URL <span className="opt">(optional)</span></label>
             <input type="url" placeholder="https://hooks.zapier.com/…" value={webhook}
               onChange={e => setWebhook(e.target.value)} disabled={!emailOn} />
           </div>
         </div>
         <div className="delivery-notice">
           💡 <strong>3-tier delivery:</strong>{" "}
-          <span className="tier">1</span> Backend /notify/email (if live) →{" "}
+          <span className="tier">1</span> Backend /notify/email →{" "}
           <span className="tier">2</span> Webhook (Zapier/Make) →{" "}
           <span className="tier">3</span> Mail client fallback.
-          All alerts logged in Compliance. Deduplication: same alert suppressed for 10 minutes.
+          Deduplication: same alert suppressed for 10 minutes.
         </div>
       </div>
 
@@ -221,12 +221,12 @@ export default function Settings() {
         {checkResult && (
           <div className="check-results">
             <div className="results-header">
-              ACCOUNT · ALARM · SERVICE · REGION · SEVERITY · METRIC / THRESHOLD · TRIGGERED · ACTION
+              SEVERITY · SERVICE · METRIC / THRESHOLD · TRIGGERED
             </div>
             {checkResult.error ? (
               <div style={{ padding: 16, color: "var(--red)", fontSize: 12 }}>⚠ {checkResult.error}</div>
             ) : checkResult.breaches?.length === 0 ? (
-              <div className="no-breaches">✓ No threshold breaches detected across all accounts [APP-LEVEL]</div>
+              <div className="no-breaches">✓ No threshold breaches detected</div>
             ) : (
               checkResult.breaches.map((b, i) => (
                 <div key={i} className="check-row">
@@ -241,28 +241,34 @@ export default function Settings() {
       </div>
 
       {/* Ideal reference */}
-      <div className="settings-card">
-        <div className="card-header-simple">
-          <div className="card-title-row">
-            <span className="card-icon">📋</span>
-            <span className="card-title">IDEAL THRESHOLD REFERENCE — AWS BEST PRACTICES</span>
-          </div>
-        </div>
-        <div style={{ padding: "16px 22px", display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 10 }}>
-          {Object.entries(IDEAL).map(([metric, vals]) => (
-            <div key={metric} style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px", display: "flex", gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text-primary)", marginBottom: 3 }}>{metric}</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>{vals.desc}</div>
+      {Object.entries(IDEAL).map(([metric, vals]) => {
+        const isBin = ONE_BOUNDARY.has(metric);
+        const isInv = INVERTED_WARN.has(metric);
+        return (
+          <div key={metric} style={{ background:"var(--bg-surface)", border:"1px solid var(--border)", borderRadius:8, padding:"12px 14px", display:"flex", gap:12 }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:700, fontSize:13, color:"var(--text-primary)", marginBottom:3 }}>{metric}</div>
+              <div style={{ fontSize:11, color:"var(--text-muted)", lineHeight:1.4 }}>{vals.desc}</div>
+            </div>
+            <div style={{ flexShrink:0, textAlign:"right", display:"flex", flexDirection:"column", gap:2 }}>
+              <div style={{ fontSize:11, color:"var(--green)", fontFamily:"var(--font-mono)" }}>
+                ✓ {isBin ? "0" : isInv ? `>${vals.warn}` : `<${vals.warn}`}{isBin ? "" : vals.unit}
               </div>
-              <div style={{ flexShrink: 0, textAlign: "right" }}>
-                <div style={{ fontSize: 11, color: "var(--yellow)", fontFamily: "var(--font-mono)" }}>⚠ {vals.warn}{vals.unit}</div>
-                <div style={{ fontSize: 11, color: "var(--red)", fontFamily: "var(--font-mono)" }}>🔴 {vals.crit}{vals.unit}</div>
+              {!isBin && (
+                <div style={{ fontSize:11, color:"var(--yellow)", fontFamily:"var(--font-mono)" }}>
+                  ⚠ {vals.warn}{vals.unit}
+                </div>
+              )}
+              {isBin && (
+                <div style={{ fontSize:10, color:"var(--text-muted)", fontFamily:"var(--font-mono)" }}>no warn tier</div>
+              )}
+              <div style={{ fontSize:11, color:"var(--red)", fontFamily:"var(--font-mono)" }}>
+                🔴 {isBin ? "≥1" : vals.crit}{isBin ? "" : vals.unit}
               </div>
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
+        );
+      })}
 
       {/* Security */}
       <div className="settings-card">
@@ -331,12 +337,19 @@ function ServiceThresholdSection({ svc, items, onToggle, onUpdate, onSave, savin
 
 function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
   const ideal = IDEAL[t.metric_name] || {};
+  const isBinary   = ONE_BOUNDARY.has(t.metric_name);
+  const isInverted = INVERTED_WARN.has(t.metric_name);
+
   return (
     <div className={`threshold-item ${t.enabled ? "" : "disabled"}`}>
       <div className="thresh-header">
         <div>
           <div className="thresh-label">{t.metric_name}</div>
-          {ideal.desc && <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.3 }}>{ideal.desc}</div>}
+          {ideal.desc && (
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+              {ideal.desc}
+            </div>
+          )}
         </div>
         <label className="toggle-sm" onClick={onToggle}>
           <div className={`sm-track ${t.enabled ? "on" : ""}`} />
@@ -347,19 +360,50 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+
+        {/* ROW 1 — Healthy reference (read-only, always shown) */}
         <div className="thresh-input-row">
-          <span style={{ fontSize: 10, color: "var(--yellow)", width: 16 }}>⚠</span>
-          <span className="thresh-hint">Warn</span>
-          <input className="thresh-input" type="number" disabled={!t.enabled}
-            value={t.warning_value}
-            onChange={e => onUpdate("warning_value", e.target.value)} />
-          <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>
-          {ideal.warn != null && (
-            <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              ideal: {ideal.warn}
+          <span style={{ fontSize: 10, color: "var(--green)", width: 16 }}>✓</span>
+          <span className="thresh-hint">Healthy</span>
+          <span style={{ fontFamily:"var(--font-mono)", fontSize:12, color:"var(--green)", padding:"2px 6px", background:"rgba(0,229,160,0.08)", borderRadius:4 }}>
+            {isBinary
+              ? "0"
+              : isInverted
+                ? `> ${ideal.warn ?? "—"}${ideal.unit ?? ""}`
+                : `< ${ideal.warn ?? "—"}${ideal.unit ?? ""}`}
+          </span>
+          {ideal.warn != null && !isBinary && (
+            <span style={{ fontSize:10, color:"var(--text-muted)", fontFamily:"var(--font-mono)", marginLeft:"auto" }}>
+              ideal: {ideal.warn}{ideal.unit}
             </span>
           )}
         </div>
+
+        {/* ROW 2 — Warning input (hidden for binary metrics) */}
+        {!isBinary && (
+          <div className="thresh-input-row">
+            <span style={{ fontSize: 10, color: "var(--yellow)", width: 16 }}>⚠</span>
+            <span className="thresh-hint">Warn</span>
+            <input className="thresh-input" type="number" disabled={!t.enabled}
+              value={t.warning_value}
+              onChange={e => onUpdate("warning_value", e.target.value)} />
+            <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>
+            {ideal.warn != null && (
+              <span style={{ fontSize:10, color:"var(--text-muted)", fontFamily:"var(--font-mono)" }}>
+                ideal: {ideal.warn}{ideal.unit}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Binary badge — replaces warning row */}
+        {isBinary && (
+          <div style={{ fontSize:10, color:"var(--text-muted)", background:"rgba(99,130,190,0.08)", border:"1px solid var(--border)", borderRadius:4, padding:"4px 8px", fontFamily:"var(--font-mono)" }}>
+            2-STATE · NO WARNING · 0 = ok, ≥1 = critical
+          </div>
+        )}
+
+        {/* ROW 3 — Critical input (always shown) */}
         <div className="thresh-input-row">
           <span style={{ fontSize: 10, color: "var(--red)", width: 16 }}>🔴</span>
           <span className="thresh-hint">Crit</span>
@@ -368,8 +412,8 @@ function ThresholdItem({ t, onToggle, onUpdate, onSave, saving, savedState }) {
             onChange={e => onUpdate("critical_value", e.target.value)} />
           <span className="thresh-unit">{t.unit || ideal.unit || ""}</span>
           {ideal.crit != null && (
-            <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              ideal: {ideal.crit}
+            <span style={{ fontSize:10, color:"var(--text-muted)", fontFamily:"var(--font-mono)" }}>
+              ideal: {ideal.crit}{ideal.unit}
             </span>
           )}
         </div>

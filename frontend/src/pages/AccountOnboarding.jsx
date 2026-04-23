@@ -1,4 +1,4 @@
-﻿// src/pages/AccountOnboarding.jsx
+﻿// monitoring-hub/frontend/src/pages/AccountOnboarding.jsx
 import { useState, useEffect } from "react";
 import "./AccountOnboarding.css";
 
@@ -31,24 +31,20 @@ const ALL_REGIONS = [
 const ENVIRONMENTS = ["Production", "Staging", "Development", "QA"];
 
 const INITIAL_FORM = {
-  account_name:       "",
-  account_id:         "",
-  primary_region:     "",
-  environment:        "Production",
-  additional_regions: [],
-  owner_team:         "",
-  alias:              "",
-  description:        "",
-  iam_role_arn:       "",
-  external_id:        "",
-  access_key:         "",
-  secret_key:         "",
-  auth_method:        "iam_role",
+  account_name:   "",
+  account_id:     "",
+  primary_region: "",
+  environment:    "Production",
+  owner_team:     "",
+  alias:          "",
+  description:    "",
+  iam_role_arn:   "",
+  external_id:    "",
+  access_key:     "",
+  secret_key:     "",
+  auth_method:    "iam_role",
 };
 
-// ── Field MUST be outside the parent component ──────────────
-// Defining it inside causes React to treat it as a new component
-// on every render → input unmounts/remounts → focus lost per keystroke.
 function Field({ id, label, required, error, children }) {
   return (
     <div className={`ob-field ${error ? "ob-field-err" : ""}`}>
@@ -61,6 +57,23 @@ function Field({ id, label, required, error, children }) {
   );
 }
 
+async function refreshQueue(setQueue) {
+  try {
+    const r = await fetch(`${BASE}/admin/accounts`);
+    if (!r.ok) throw new Error();
+    const all = await r.json();
+    // Only show truly pending/processing — not active ones
+    const pending = Array.isArray(all)
+      ? all.filter(a => a.status && a.status !== "active" && a.status !== "healthy")
+      : [];
+    setQueue(pending.map(a => ({
+      account_name: a.account_name,
+      account_id: a.account_id,
+      status: a.status,
+    })));
+  } catch {}
+}
+
 export default function AccountOnboarding() {
   const [form,    setForm]    = useState(INITIAL_FORM);
   const [errors,  setErrors]  = useState({});
@@ -70,20 +83,11 @@ export default function AccountOnboarding() {
   const [apiErr,  setApiErr]  = useState(null);
 
   useEffect(() => {
-    fetch(`${BASE}/admin/accounts/queue`)
-      .then(r => r.json())
-      .then(d => setQueue(Array.isArray(d) ? d : []))
-      .catch(() => {});
+    refreshQueue(setQueue);
+    // Poll queue every 15s to catch backend-side updates
+    const t = setInterval(() => refreshQueue(setQueue), 15000);
+    return () => clearInterval(t);
   }, []);
-
-  function toggleRegion(rid) {
-    setForm(f => ({
-      ...f,
-      additional_regions: f.additional_regions.includes(rid)
-        ? f.additional_regions.filter(r => r !== rid)
-        : [...f.additional_regions, rid],
-    }));
-  }
 
   function validate() {
     const e = {};
@@ -107,20 +111,26 @@ export default function AccountOnboarding() {
     if (Object.keys(errs).length) { setErrors(errs); return; }
     setSaving(true);
     setApiErr(null);
+
+    const accountName = form.account_name.trim();
+
+    // Optimistically add to queue immediately
+    // Remove from queue immediately on success — it's now active
+    setQueue(prev => prev.filter(q => q.account_name !== accountName));
+
     try {
       const body = {
-        account_name:       form.account_name.trim(),
-        account_id:         form.account_id.trim(),
-        default_region:     form.primary_region,
-        environment:        form.environment,
-        additional_regions: form.additional_regions,
-        owner_team:         form.owner_team.trim(),
-        alias:              form.alias.trim(),
-        description:        form.description.trim(),
-        iam_role_arn:       form.auth_method === "iam_role"    ? form.iam_role_arn.trim() : "",
-        external_id:        form.auth_method === "iam_role"    ? form.external_id.trim()  : "",
-        access_key:         form.auth_method === "access_keys" ? form.access_key.trim()   : "",
-        secret_key:         form.auth_method === "access_keys" ? form.secret_key.trim()   : "",
+        account_name:   accountName,
+        account_id:     form.account_id.trim(),
+        default_region: form.primary_region,
+        environment:    form.environment,
+        owner_team:     form.owner_team.trim(),
+        alias:          form.alias.trim(),
+        description:    form.description.trim(),
+        iam_role_arn:   form.auth_method === "iam_role"    ? form.iam_role_arn.trim() : "",
+        external_id:    form.auth_method === "iam_role"    ? form.external_id.trim()  : "",
+        access_key:     form.auth_method === "access_keys" ? form.access_key.trim()   : "",
+        secret_key:     form.auth_method === "access_keys" ? form.secret_key.trim()   : "",
       };
       const res = await fetch(`${BASE}/admin/accounts`, {
         method:  "POST",
@@ -131,16 +141,16 @@ export default function AccountOnboarding() {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.detail || `Server error ${res.status}`);
       }
-      setSuccess(form.account_name.trim());
+      setSuccess(accountName);
       setForm(INITIAL_FORM);
       setErrors({});
-      // Refresh queue
-      fetch(`${BASE}/admin/accounts/queue`)
-        .then(r => r.json())
-        .then(d => setQueue(Array.isArray(d) ? d : []))
-        .catch(() => {});
+      // Update queue with real status from server
+      setTimeout(() => refreshQueue(setQueue), 1000);
+      setTimeout(() => refreshQueue(setQueue), 4000);
     } catch (err) {
       setApiErr(err.message);
+      // Remove the optimistic entry on failure
+      setQueue(prev => prev.filter(q => !(q.account_name === accountName && q.status === "pending")));
     } finally {
       setSaving(false);
     }
@@ -228,23 +238,6 @@ export default function AccountOnboarding() {
                   {ENVIRONMENTS.map(env => <option key={env}>{env}</option>)}
                 </select>
               </Field>
-            </div>
-          </div>
-
-          {/* Additional Regions */}
-          <div className="ob-section">
-            <div className="ob-section-title">ADDITIONAL REGIONS</div>
-            <div className="ob-regions-grid">
-              {ALL_REGIONS.map(r => (
-                <button
-                  type="button"
-                  key={r.id}
-                  className={`ob-region-chip ${form.additional_regions.includes(r.id) ? "ob-region-active" : ""}`}
-                  onClick={() => toggleRegion(r.id)}
-                >
-                  {r.label}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -379,7 +372,7 @@ export default function AccountOnboarding() {
               <div key={i} className="obs-item">
                 <div className="obs-item-name">{q.account_name}</div>
                 <div className="obs-item-id">{q.account_id}</div>
-                <span className={`obs-item-status obs-status-${q.status}`}>{q.status}</span>
+                <span className={`obs-item-status obs-status-${q.status || "pending"}`}>{q.status || "pending"}</span>
               </div>
             ))}
           </div>

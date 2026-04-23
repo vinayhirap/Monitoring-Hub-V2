@@ -526,7 +526,7 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
 
     cw    = boto3.client("cloudwatch", region_name=region)
     end   = datetime.now(timezone.utc)
-    start = end - timedelta(minutes=15)
+    start = end - timedelta(minutes=3)
 
     # Build resource lists per service for dimension mapping
     ec2_instances  = collect_ec2_instances(region)
@@ -570,7 +570,7 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
             try:
                 resp = cw.get_metric_statistics(
                     Namespace=namespace, MetricName=metric, Dimensions=dims,
-                    StartTime=start, EndTime=end, Period=300, Statistics=[stat],
+                    StartTime=start, EndTime=end, Period=60, Statistics=[stat],
                 )
                 pts = sorted(resp["Datapoints"], key=lambda x: x["Timestamp"], reverse=True)
                 if not pts:
@@ -663,13 +663,13 @@ def get_account_summary(region=DEFAULT_REGION) -> dict:
 
 
 # ── Helpers ───────────────────────────────────────────────────
-def _get_metric(cw, namespace, metric, dims, minutes=5) -> float:
+def _get_metric(cw, namespace, metric, dims, minutes=3) -> float:
     try:
         end = datetime.now(timezone.utc)
         r   = cw.get_metric_statistics(
             Namespace=namespace, MetricName=metric, Dimensions=dims,
             StartTime=end - timedelta(minutes=minutes), EndTime=end,
-            Period=300, Statistics=["Average"],
+            Period=60, Statistics=["Average"],
         )
         pts = sorted(r["Datapoints"], key=lambda x: x["Timestamp"], reverse=True)
         return pts[0]["Average"] if pts else 0.0

@@ -1,4 +1,4 @@
-// src/pages/ServiceDetail.jsx
+// monitoring-hub/frontend/src/pages/ServiceDetail.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
@@ -16,7 +16,6 @@ const SERVICE_META = {
   ELB:    { icon: "⚖",   color: "#f472b6", label: "Load Balancers" },
 };
 
-// Time range options → hours value (null = "all time" = use large number)
 const TIME_RANGES = [
   { label: "1H",  hours: 1 },
   { label: "3H",  hours: 3 },
@@ -89,7 +88,7 @@ export default function ServiceDetail({ service }) {
   const [search,     setSearch]     = useState("");
   const [filter,     setFilter]     = useState("all");
   const [sortKey,    setSortKey]    = useState("name");
-  const [timeRange,  setTimeRange]  = useState(6); // hours
+  const [timeRange,  setTimeRange]  = useState(6);
   const notImplRef = useRef(false);
   const selectedRef = useRef(null);
 
@@ -127,7 +126,6 @@ export default function ServiceDetail({ service }) {
     return () => clearInterval(t);
   }, [loadRows]);
 
-  // Re-fetch metrics when time range changes (if something is selected)
   useEffect(() => {
     if (!selectedRef.current) return;
     const row = selectedRef.current;
@@ -149,8 +147,6 @@ export default function ServiceDetail({ service }) {
     try {
       const data = await fetchMetrics(service, row, region, timeRange);
       setMetrics(data);
-
-      // Sync CPU in table list from chart latest — fixes stale cache mismatch
       if (service === "EC2" && data?.cpu?.length > 0) {
         const latestCpu = data.cpu[data.cpu.length - 1].v;
         setRows(prev => prev.map(r =>
@@ -174,6 +170,9 @@ export default function ServiceDetail({ service }) {
   }, {});
   const filterStates = ["all", ...Object.keys(stateCounts)];
 
+  // Sort: running/active first, then by name
+  const STATE_PRIORITY = { running: 0, active: 0, "in-use": 0, available: 1, stopped: 2, terminated: 3 };
+
   const visible = rows
     .filter(r => {
       if (search && !Object.values(r).join(" ").toLowerCase().includes(search.toLowerCase())) return false;
@@ -184,9 +183,16 @@ export default function ServiceDetail({ service }) {
       return true;
     })
     .sort((a, b) => {
+      // Always sort active/running first
+      const sa = (a.state || a.status || "").toLowerCase();
+      const sb = (b.state || b.status || "").toLowerCase();
+      const pa = STATE_PRIORITY[sa] ?? 1;
+      const pb = STATE_PRIORITY[sb] ?? 1;
+      if (pa !== pb) return pa - pb;
+
       if (sortKey === "cpu")   return (b.cpu_utilization || 0) - (a.cpu_utilization || 0);
       if (sortKey === "size")  return (a.instance_type || a.size || "").localeCompare(b.instance_type || b.size || "");
-      if (sortKey === "state") return (a.state || a.status || "").localeCompare(b.state || b.status || "");
+      if (sortKey === "state") return sa.localeCompare(sb);
       const na = a.name || a.instance_id || a.function_name || a.bucket_name || a.dns_name || "";
       const nb = b.name || b.instance_id || b.function_name || b.bucket_name || b.dns_name || "";
       return na.localeCompare(nb);
@@ -327,19 +333,36 @@ function ServiceTable({ service, rows, loading, selected, onSelect, allRows }) {
   }
 }
 
+// EC2 Table — removed NET IN / NET OUT columns, kept CPU + StatusCheckFailed indicator
 function EC2Table({ rows, selected, onSelect }) {
   return (
     <table className="inst-table">
-      <thead><tr><th>NAME / ID</th><th>TYPE</th><th>STATE</th><th>ZONE</th><th>CPU %</th><th>NET IN</th><th>NET OUT</th><th>UPTIME</th></tr></thead>
+      <thead>
+        <tr>
+          <th>NAME / ID</th>
+          <th>TYPE</th>
+          <th>STATE</th>
+          <th>ZONE</th>
+          <th>CPU %</th>
+          <th>STATUS CHECK</th>
+          <th>UPTIME</th>
+        </tr>
+      </thead>
       <tbody>{rows.map(r => (
         <tr key={r.instance_id} className={`inst-row ${selected?.instance_id === r.instance_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td><div className="inst-name">{r.name || r.instance_id}</div><div className="inst-id mono">{r.instance_id}</div></td>
+          <td>
+            <div className="inst-name">{r.name || r.instance_id}</div>
+            <div className="inst-id mono">{r.instance_id}</div>
+          </td>
           <td className="mono">{r.instance_type}</td>
           <td><StateBadge state={r.state} /></td>
           <td className="mono small">{r.availability_zone}</td>
           <td><CpuBar cpu={r.cpu_utilization} state={r.state} /></td>
-          <td className="mono small">{r.state === "running" ? `${r.network_in_kb ?? 0} KB/s` : "—"}</td>
-          <td className="mono small">{r.state === "running" ? `${r.network_out_kb ?? 0} KB/s` : "—"}</td>
+          <td>
+            {r.state === "running"
+              ? <StatusCheckBadge value={r.status_check_failed ?? 0} />
+              : <span className="mono small muted">—</span>}
+          </td>
           <td className="mono small">{r.uptime_days ?? "—"}d</td>
         </tr>
       ))}</tbody>
@@ -347,20 +370,49 @@ function EC2Table({ rows, selected, onSelect }) {
   );
 }
 
-function EBSTable({ rows, selected, onSelect }) {
+// EBS Table — show instance name alongside instance ID in ATTACHED TO column
+function EBSTable({ rows, selected, onSelect, allRows }) {
+  // Build instance ID → name lookup from allRows if available (won't exist here, but future-proof)
+  // Backend should ideally return attached_instance_name; we use it if present, fallback to ID
   return (
     <table className="inst-table">
-      <thead><tr><th>NAME / ID</th><th>TYPE</th><th>SIZE</th><th>STATE</th><th>ZONE</th><th>IOPS</th><th>ENCRYPTED</th><th>ATTACHED TO</th></tr></thead>
+      <thead>
+        <tr>
+          <th>NAME / ID</th>
+          <th>TYPE</th>
+          <th>SIZE</th>
+          <th>STATE</th>
+          <th>ZONE</th>
+          <th>IOPS</th>
+          <th>ENCRYPTED</th>
+          <th>ATTACHED TO</th>
+        </tr>
+      </thead>
       <tbody>{rows.map(r => (
         <tr key={r.volume_id} className={`inst-row ${selected?.volume_id === r.volume_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td><div className="inst-name">{r.name || r.volume_id}</div><div className="inst-id mono">{r.volume_id}</div></td>
+          <td>
+            <div className="inst-name">{r.name || r.volume_id}</div>
+            <div className="inst-id mono">{r.volume_id}</div>
+          </td>
           <td className="mono small">{r.volume_type}</td>
           <td className="mono small">{r.size_gb} GB</td>
           <td><StatusChip status={r.state} colorMap={{ "in-use": "green", available: "blue", error: "red" }} /></td>
           <td className="mono small">{r.availability_zone}</td>
           <td className="mono small">{r.iops ?? "—"}</td>
           <td className="mono small">{r.encrypted ? "🔒 Yes" : "No"}</td>
-          <td className="mono small">{r.attached_to || "—"}</td>
+          <td>
+            {r.attached_to ? (
+              <div>
+                {/* Show instance name if backend provides it, else show truncated ID */}
+                {r.attached_instance_name && (
+                  <div className="inst-name" style={{ fontSize: 11 }}>{r.attached_instance_name}</div>
+                )}
+                <div className="inst-id mono" style={{ fontSize: 10 }}>{r.attached_to}</div>
+              </div>
+            ) : (
+              <span className="mono small muted">—</span>
+            )}
+          </td>
         </tr>
       ))}</tbody>
     </table>
@@ -486,19 +538,13 @@ function ECSTable({ rows, selected, onSelect }) {
   );
 }
 
-// ── Resource Relationship Panel ──────────────────────────────────────────────
-
 function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
-  // For EC2: find EBS volumes attached to this instance
   if (service === "EC2" && allRows) {
     const attachedVolumes = (allRows._ebs || []).filter(v =>
       v.attached_to && v.attached_to.includes(row.instance_id)
     );
-    // also check instance's block device mappings if available
     const blockDevices = row.block_device_mappings || row.volumes || [];
-
     if (attachedVolumes.length === 0 && blockDevices.length === 0) return null;
-
     return (
       <div className="id-section">
         <div className="id-section-title">🔗 ATTACHED VOLUMES</div>
@@ -526,15 +572,12 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
     );
   }
 
-  // For EBS: show which instance it's attached to
   if (service === "EBS") {
     const attachedTo = row.attached_to;
     if (!attachedTo) return null;
-    // Try to find instance name from allRows
     const instanceId = typeof attachedTo === "string"
       ? attachedTo.split(",")[0].trim()
       : attachedTo;
-
     return (
       <div className="id-section">
         <div className="id-section-title">🔗 ATTACHED TO INSTANCE</div>
@@ -542,7 +585,11 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
           <div className="rel-item">
             <span className="rel-icon">🖥</span>
             <div className="rel-info">
-              <div className="rel-name">{instanceId}</div>
+              {/* Show instance name prominently if available */}
+              {row.attached_instance_name && (
+                <div className="rel-name">{row.attached_instance_name}</div>
+              )}
+              <div className={row.attached_instance_name ? "rel-sub mono" : "rel-name mono"}>{instanceId}</div>
               <div className="rel-sub mono">EC2 Instance · {row.availability_zone}</div>
             </div>
             <span className="rel-badge">Attached</span>
@@ -552,7 +599,6 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
     );
   }
 
-  // For RDS: show its endpoint / subnet group info
   if (service === "RDS" && row.endpoint) {
     return (
       <div className="id-section">
@@ -582,8 +628,6 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
   return null;
 }
 
-// ── Detail Panel ─────────────────────────────────────────────────────────────
-
 function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated }) {
   const name = row.name || row.identifier || row.function_name || row.bucket_name || row.instance_id || "Resource";
 
@@ -592,12 +636,20 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
     EBS:    row.state !== "in-use"  ? "Volume not attached — no I/O metrics."         : null,
     RDS:    null,
     Lambda: null,
-    S3:     null,   // S3 now has real metrics
+    S3:     null,
     ELB:    "ELB metrics coming soon.",
     ECS:    "ECS service metrics coming soon.",
   }[service];
 
   const rangLabel = TIME_RANGES.find(t => t.hours === timeRange)?.label || "6H";
+
+  // S3: compute static stats from row data since CW metrics often empty
+  const s3SizeDisplay = row.size_bytes
+    ? fmtBytes(row.size_bytes)
+    : row.bucket_size_bytes
+    ? fmtBytes(row.bucket_size_bytes)
+    : "—";
+  const s3ObjCount = row.object_count ?? row.objects ?? "—";
 
   return (
     <div className="inst-detail">
@@ -615,7 +667,41 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         ))}
       </div>
 
-      {/* Resource Relationships */}
+      {/* S3 static info box — always show even when CW has no data */}
+      {service === "S3" && (
+        <div className="id-section">
+          <div className="id-section-title">📦 BUCKET INFO</div>
+          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 0 }}>
+            <QuickStat label="Size" value={s3SizeDisplay} />
+            <QuickStat label="Objects" value={String(s3ObjCount)} />
+            <QuickStat label="Created" value={row.creation_date ? shortDate(row.creation_date) : "—"} />
+          </div>
+          {(s3SizeDisplay === "—" && s3ObjCount === "—") && (
+            <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
+              ℹ S3 size/object metrics require CloudWatch Storage Lens or S3 bucket metrics to be enabled. CW reports daily, not real-time.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Lambda static info */}
+      {service === "Lambda" && (
+        <div className="id-section">
+          <div className="id-section-title">⚡ FUNCTION DETAILS</div>
+          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
+            <QuickStat label="Handler"     value={row.handler      || "—"} mono />
+            <QuickStat label="Description" value={row.description  || "—"} />
+            <QuickStat label="Last Modified" value={row.last_modified ? shortDate(row.last_modified) : "—"} />
+            <QuickStat label="Code Size"   value={row.code_size ? fmtBytes(row.code_size) : "—"} />
+          </div>
+          {!metrics && !mLoading && (
+            <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
+              ℹ Lambda invocation metrics appear only after the function is invoked. No recent invocations detected.
+            </div>
+          )}
+        </div>
+      )}
+
       <ResourceRelationships
         service={service}
         row={row}
@@ -637,7 +723,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         </div>
       )}
 
-      {/* Metrics section */}
       <div className="id-section">
         <div className="id-section-title-row">
           <span className="id-section-title" style={{ marginBottom: 0 }}>📊 CLOUDWATCH METRICS</span>
@@ -664,12 +749,10 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           <div className="charts-grid">
             {service === "EC2" && <>
               <div className="chart-full">
-                <MetricChart title="CPU Utilization" data={metrics.cpu} color="#00c7ff" unit="%" threshold={85} timeRange={rangLabel} />
+                {/* CPU chart — threshold line is the alert threshold, NOT a tooltip value */}
+                <MetricChart title="CPU Utilization %" data={metrics.cpu} color="#00c7ff" unit="%" threshold={85} thresholdLabel="alert threshold" timeRange={rangLabel} />
               </div>
-              <MetricChart title="Network In (B)"  data={metrics.network_in}  color="#00e5a0" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Network Out (B)" data={metrics.network_out} color="#a78bfa" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Disk Read (B)"   data={metrics.disk_read}   color="#fbbf24" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Disk Write (B)"  data={metrics.disk_write}  color="#f472b6" unit="B" timeRange={rangLabel} />
+              {/* Removed Disk Read / Disk Write per request */}
             </>}
 
             {service === "EBS" && <>
@@ -693,7 +776,7 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
 
             {service === "RDS" && <>
               <div className="chart-full">
-                <MetricChart title="CPU Utilization"  data={metrics.cpu}            color="#00c7ff" unit="%" threshold={85} timeRange={rangLabel} />
+                <MetricChart title="CPU Utilization %" data={metrics.cpu} color="#00c7ff" unit="%" threshold={85} timeRange={rangLabel} />
               </div>
               <MetricChart title="DB Connections"   data={metrics.db_connections}   color="#a78bfa" unit="" timeRange={rangLabel} />
               <MetricChart title="Free Memory"      data={metrics.freeable_memory}  color="#f472b6" unit="B" timeRange={rangLabel} />
@@ -702,7 +785,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <MetricChart title="Read Latency"     data={metrics.read_latency}     color="#38bdf8" unit="s" threshold={0.02} timeRange={rangLabel} />
               <MetricChart title="Write Latency"    data={metrics.write_latency}    color="#e879f9" unit="s" threshold={0.02} timeRange={rangLabel} />
             </>}
-
 
             {service === "S3" && <>
               <div className="chart-full">
@@ -717,11 +799,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
               <MetricChart title="4XX Errors"            data={metrics?.errors_4xx||[]}    color="#ffc940" unit=""   timeRange={rangLabel} />
               <MetricChart title="5XX Errors"            data={metrics?.errors_5xx||[]}    color="#ff4d6d" unit=""   threshold={5} timeRange={rangLabel} />
               <MetricChart title="Bytes Downloaded"      data={metrics?.bytes_download||[]} color="#f472b6" unit="B" timeRange={rangLabel} />
-              {metrics?.note && (
-                <div className="chart-full" style={{fontSize:10,color:"rgba(99,130,190,0.45)",padding:"4px 2px",fontStyle:"italic"}}>
-                  ℹ {metrics.note}
-                </div>
-              )}
             </>}
 
             {service === "ELB" && <>
@@ -741,67 +818,31 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         ☁ Open in AWS ↗
       </a>
 
-      {/* Inline CSS for new elements */}
       <style>{`
         .id-section-title-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 10px;
-          flex-wrap: wrap;
-          gap: 8px;
+          display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 10px; flex-wrap: wrap; gap: 8px;
         }
         .time-range-tabs {
-          display: flex;
-          gap: 2px;
-          background: rgba(8,14,26,0.6);
-          border: 1px solid rgba(99,130,190,0.15);
-          border-radius: 6px;
-          padding: 3px;
+          display: flex; gap: 2px;
+          background: rgba(8,14,26,0.6); border: 1px solid rgba(99,130,190,0.15);
+          border-radius: 6px; padding: 3px;
         }
         .tr-btn {
-          background: none;
-          border: none;
-          color: rgba(99,130,190,0.6);
-          font-size: 10px;
-          font-family: monospace;
-          padding: 3px 7px;
-          border-radius: 4px;
-          cursor: pointer;
-          letter-spacing: 0.5px;
-          transition: all 0.15s;
-          white-space: nowrap;
+          background: none; border: none; color: rgba(99,130,190,0.6);
+          font-size: 10px; font-family: monospace; padding: 3px 7px;
+          border-radius: 4px; cursor: pointer; letter-spacing: 0.5px;
+          transition: all 0.15s; white-space: nowrap;
         }
         .tr-btn:hover { color: #a8bdd8; background: rgba(99,130,190,0.1); }
-        .tr-active {
-          background: rgba(0,199,255,0.15) !important;
-          color: #00c7ff !important;
-          font-weight: 700;
-        }
-        /* 2-column chart grid — no scrolling */
-        .charts-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 8px;
-        }
-        .chart-full {
-          grid-column: 1 / -1;
-        }
-        /* Resource relationship styles */
-        .rel-list {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
+        .tr-active { background: rgba(0,199,255,0.15) !important; color: #00c7ff !important; font-weight: 700; }
+        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .chart-full { grid-column: 1 / -1; }
+        .rel-list { display: flex; flex-direction: column; gap: 6px; }
         .rel-item {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          background: rgba(8,14,26,0.5);
-          border: 1px solid rgba(99,130,190,0.12);
-          border-radius: 7px;
-          padding: 8px 10px;
-          transition: border-color 0.15s;
+          display: flex; align-items: center; gap: 10px;
+          background: rgba(8,14,26,0.5); border: 1px solid rgba(99,130,190,0.12);
+          border-radius: 7px; padding: 8px 10px; transition: border-color 0.15s;
         }
         .rel-item:hover { border-color: rgba(99,130,190,0.25); }
         .rel-icon { font-size: 16px; flex-shrink: 0; }
@@ -809,31 +850,31 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         .rel-name { font-size: 12px; font-weight: 600; color: #c8d8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .rel-sub  { font-size: 10px; color: rgba(99,130,190,0.55); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .rel-badge {
-          font-size: 10px;
-          font-family: monospace;
-          background: rgba(0,229,160,0.12);
-          color: #00e5a0;
-          border: 1px solid rgba(0,229,160,0.25);
-          border-radius: 4px;
-          padding: 2px 7px;
-          white-space: nowrap;
-          flex-shrink: 0;
+          font-size: 10px; font-family: monospace;
+          background: rgba(0,229,160,0.12); color: #00e5a0;
+          border: 1px solid rgba(0,229,160,0.25); border-radius: 4px;
+          padding: 2px 7px; white-space: nowrap; flex-shrink: 0;
         }
-        /* Compact chart box so 2-col fits without scroll */
         .charts-grid .chart-box {
-          background: rgba(8,14,26,0.6);
-          border: 1px solid rgba(99,130,190,0.1);
-          border-radius: 8px;
-          padding: 8px 10px;
+          background: rgba(8,14,26,0.6); border: 1px solid rgba(99,130,190,0.1);
+          border-radius: 8px; padding: 8px 10px;
         }
-        .charts-grid .chart-title { font-size: 10px; }
+        .charts-grid .chart-title  { font-size: 10px; }
         .charts-grid .chart-latest { font-size: 12px; }
+        /* Status check badge */
+        .sc-ok   { font-size: 10px; font-weight: 700; color: #00e5a0; font-family: monospace; }
+        .sc-fail { font-size: 10px; font-weight: 700; color: #ff4d6d; font-family: monospace; background: rgba(255,77,109,0.1); border: 1px solid rgba(255,77,109,0.25); border-radius: 4px; padding: 2px 7px; }
       `}</style>
     </div>
   );
 }
 
 /* ── helpers ── */
+function StatusCheckBadge({ value }) {
+  if (value === 0) return <span className="sc-ok">✓ OK</span>;
+  return <span className="sc-fail">✗ FAILED ({value})</span>;
+}
+
 function awsConsoleLink(service, region) {
   const base = `https://${region}.console.aws.amazon.com`;
   const map = {
@@ -922,7 +963,7 @@ function StatusChip({ status, colorMap = {} }) { const s = (status || "").toLowe
 function CpuBar({ cpu, state }) { if (state !== "running") return <span className="mono small muted">—</span>; const pct = cpu ?? 0; const color = pct > 75 ? "#ff4d6d" : pct > 50 ? "#ffc940" : "#00e5a0"; return <div className="cpu-cell"><div className="cpu-bar-bg"><div className="cpu-bar-fill" style={{ width: `${Math.max(2, pct)}%`, background: color }} /></div><span className="cpu-label mono">{pct.toFixed(1)}%</span></div>; }
 function QuickStat({ label, value, color, mono }) { return <div className="qs-item"><div className="qs-label">{label}</div><div className={`qs-value ${color ? `c-${color}` : ""}${mono ? " mono" : ""}`}>{value}</div></div>; }
 
-function MetricChart({ title, data, color, unit, threshold, timeRange }) {
+function MetricChart({ title, data, color, unit, threshold, thresholdLabel, timeRange }) {
   if (!data || data.length === 0) return (
     <div className="chart-box">
       <div className="chart-title">{title}</div>
@@ -932,7 +973,8 @@ function MetricChart({ title, data, color, unit, threshold, timeRange }) {
   const latest = data[data.length - 1]?.v ?? 0;
   const formatted = data.map(d => ({
     t: new Date(d.t).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
-    v: d.v
+    v: d.v,
+    ...(threshold ? { threshold } : {}),
   }));
   return (
     <div className="chart-box">
@@ -945,8 +987,26 @@ function MetricChart({ title, data, color, unit, threshold, timeRange }) {
           <CartesianGrid stroke="rgba(99,130,190,0.08)" strokeDasharray="3 3" />
           <XAxis dataKey="t" tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
           <YAxis tick={{ fontSize: 9, fill: "#3d5070" }} tickLine={false} axisLine={false} />
-          <Tooltip contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }} labelStyle={{ color: "#7a90b8" }} itemStyle={{ color }} />
-          {threshold && <Line type="monotone" dataKey={() => threshold} stroke="#ff4d6d" strokeDasharray="4 4" dot={false} strokeWidth={1} />}
+          <Tooltip
+            contentStyle={{ background: "#0b1220", border: "1px solid rgba(99,130,190,0.2)", borderRadius: 6, fontSize: 11 }}
+            labelStyle={{ color: "#7a90b8" }}
+            formatter={(value, name) => {
+              if (name === "threshold") return [`${value}${unit} (${thresholdLabel || "threshold"})`, "⚠ Alert at"];
+              return [`${value.toFixed(2)}${unit}`, title];
+            }}
+            itemStyle={{ color }}
+          />
+          {threshold && (
+            <Line
+              type="monotone"
+              dataKey="threshold"
+              stroke="#ff4d6d"
+              strokeDasharray="4 4"
+              dot={false}
+              strokeWidth={1}
+              legendType="none"
+            />
+          )}
           <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} activeDot={{ r: 3, fill: color }} />
         </LineChart>
       </ResponsiveContainer>

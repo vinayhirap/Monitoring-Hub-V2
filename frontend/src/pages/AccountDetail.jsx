@@ -1,4 +1,5 @@
-﻿import { useEffect, useState } from "react";
+﻿// monitoring-hub/frontend/src/pages/AccountDetail.jsx
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { getLiveEC2, getLiveEC2Metrics } from "../api/api";
