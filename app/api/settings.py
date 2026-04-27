@@ -14,14 +14,6 @@ def _ser(obj):
     return obj
 
 
-@router.get("/metrics")
-def get_metric_catalog():
-    conn = get_connection(); cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT * FROM metric_catalog ORDER BY service, metric_name")
-    rows = cur.fetchall(); cur.close(); conn.close()
-    return [_ser(r) for r in rows]
-
-
 @router.get("/thresholds")
 def get_thresholds(account_id: int = Query(3)):
     conn = get_connection(); cur = conn.cursor(dictionary=True)

@@ -1,7 +1,7 @@
 # app/api/auth.py
 from fastapi import APIRouter, HTTPException, Body
 from app.db import get_connection
-import hashlib
+import bcrypt
 import logging
 
 logger = logging.getLogger(__name__)
@@ -9,14 +9,11 @@ router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 
 def _verify_password(plain: str, stored: str) -> bool:
-    """Verify password — supports bcrypt and sha256 fallback."""
     try:
-        from passlib.context import CryptContext
-        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        return ctx.verify(plain, stored)
-    except Exception:
-        # fallback: sha256
-        return hashlib.sha256(plain.encode()).hexdigest() == stored
+        return bcrypt.checkpw(plain.encode(), stored.encode())
+    except Exception as e:
+        logger.warning(f"Password verify error: {e}")
+        return False
 
 
 @router.post("/login")
@@ -29,14 +26,8 @@ def login(payload: dict = Body(...)):
 
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-
-    # Detect password column name dynamically
-    cursor.execute("SHOW COLUMNS FROM users LIKE 'password%'")
-    col    = cursor.fetchone()
-    pw_col = col["Field"] if col else "password_hash"
-
     cursor.execute(
-        f"SELECT id, username, role, {pw_col} AS pw FROM users WHERE username = %s",
+        "SELECT id, username, role, password AS pw FROM users WHERE username = %s AND active = 1",
         (username,)
     )
     user = cursor.fetchone()
@@ -45,7 +36,6 @@ def login(payload: dict = Body(...)):
 
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-
     if not _verify_password(password, user["pw"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 

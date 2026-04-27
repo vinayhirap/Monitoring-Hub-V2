@@ -5,7 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useWebSocket } from "../hooks/useWebSocket";
 import "./Alerts.css";
 
-const BASE = "http://localhost:8000";
+const BASE = "";
 
 // ── Shared AudioContext — created once, reused ─────────────────
 let _audioCtx = null;
@@ -14,39 +14,45 @@ function getAudioCtx() {
   if (!_audioCtx) {
     _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
-  if (_audioCtx.state === "suspended") {
-    _audioCtx.resume();
-  }
   return _audioCtx;
+}
+
+function unlockAudio() {
+  const ctx = getAudioCtx();
+  if (ctx.state === "suspended") {
+    ctx.resume();
+  }
 }
 
 function playBeep(severity) {
   try {
-    const ctx    = getAudioCtx();
-    const isCrit = severity === "CRITICAL";
-    const tones  = isCrit ? [900, 700] : [520];
-
-    tones.forEach((freq, i) => {
-      const osc  = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const comp = ctx.createDynamicsCompressor();
-
-      osc.connect(gain);
-      gain.connect(comp);
-      comp.connect(ctx.destination);
-
-      osc.type = "square";
-      osc.frequency.value = freq;
-
-      const t0 = ctx.currentTime + i * 0.35;
-      gain.gain.setValueAtTime(0.001, t0);
-      gain.gain.linearRampToValueAtTime(0.8, t0 + 0.02);
-      gain.gain.setValueAtTime(0.8, t0 + 0.15);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
-
-      osc.start(t0);
-      osc.stop(t0 + 0.45);
-    });
+    const ctx = getAudioCtx();
+    const doPlay = () => {
+      const isCrit = severity === "CRITICAL";
+      const tones  = isCrit ? [880, 660] : [520];
+      tones.forEach((freq, i) => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const comp = ctx.createDynamicsCompressor();
+        osc.connect(gain);
+        gain.connect(comp);
+        comp.connect(ctx.destination);
+        osc.type = "square";
+        osc.frequency.value = freq;
+        const t0 = ctx.currentTime + i * 0.3;
+        gain.gain.setValueAtTime(0.001, t0);
+        gain.gain.linearRampToValueAtTime(0.9, t0 + 0.015);
+        gain.gain.setValueAtTime(0.9, t0 + 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+        osc.start(t0);
+        osc.stop(t0 + 0.4);
+      });
+    };
+    if (ctx.state === "suspended") {
+      ctx.resume().then(doPlay);
+    } else {
+      doPlay();
+    }
   } catch (e) {
     console.warn("Beep failed:", e);
   }
@@ -101,8 +107,9 @@ export default function Alerts() {
   const [alerts,  setAlerts]  = useState([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
-  const [tab,     setTab]     = useState("all");
+  const [tab,     setTab]     = useState("active");
   const [search,  setSearch]  = useState("");
+  const [isNOC,   setIsNOC]   = useState(false);
   const [acting,  setActing]  = useState(null);
   const [soundOn, setSoundOn] = useState(true);
 
@@ -114,7 +121,7 @@ export default function Alerts() {
   // Unlock AudioContext on first user interaction anywhere on page
   useEffect(() => {
     const unlock = () => {
-      getAudioCtx();
+      unlockAudio();
       document.removeEventListener("click", unlock);
     };
     document.addEventListener("click", unlock);
@@ -145,6 +152,12 @@ export default function Alerts() {
     const t = setInterval(loadAlerts, 10000);
     return () => clearInterval(t);
   }, [loadAlerts]);
+
+  // NOC fullscreen mode
+  useEffect(() => {
+    document.body.classList.toggle("noc-mode", isNOC);
+    return () => document.body.classList.remove("noc-mode");
+  }, [isNOC]);
 
   // WebSocket push — beep only for brand-new alerts
   useEffect(() => {
@@ -252,7 +265,7 @@ export default function Alerts() {
           <button
             className="btn-refresh"
             onClick={() => {
-              getAudioCtx(); // unlock audio on this gesture
+              unlockAudio();
               setSoundOn(v => !v);
             }}
             title={soundOn ? "Mute alert sound" : "Enable alert sound"}
@@ -261,6 +274,14 @@ export default function Alerts() {
             {soundOn ? "🔔" : "🔕"}
           </button>
           <button className="btn-refresh" onClick={loadAlerts}>↻ Refresh</button>
+          <button
+            className={`btn-refresh${isNOC ? " noc-active-btn" : ""}`}
+            onClick={() => setIsNOC(v => !v)}
+            title="Toggle NOC fullscreen"
+            style={{ fontWeight: 600 }}
+          >
+            {isNOC ? "⊠ Exit NOC" : "⊞ NOC Mode"}
+          </button>
           <div className="live-pill"><span className="live-dot" />LIVE</div>
         </div>
       </div>
@@ -325,8 +346,8 @@ export default function Alerts() {
                   const sev        = (a.severity || "INFO").toUpperCase();
                   const status     = (a.status   || "active").toLowerCase();
                   const isActing   = acting === a.id;
-                  const route      = detailRoute(a.resource);
-                  const consoleUrl = awsConsoleUrl(a.resource);
+                  const route      = detailRoute(a.resource, a.account_id);
+                  const consoleUrl = awsConsoleUrl(a.resource, a.region);
 
                   return (
                     <tr key={a.id ?? idx} className={`alert-row sev-row-${sev.toLowerCase()}`}>
@@ -334,7 +355,10 @@ export default function Alerts() {
                       <td><SevBadge sev={sev} /></td>
 
                       <td className="alert-metric">
-                        {a.metric_name || a.alarm_name || "—"}
+                        <div>{metricLabel(a.metric_name)}</div>
+                        <div style={{fontSize:"11px", color:"#888"}}>
+                          {(a.service || "").toUpperCase()}
+                        </div>
                       </td>
 
                       <td className="mono small">
@@ -348,12 +372,19 @@ export default function Alerts() {
                           <span
                             className="res-deeplink"
                             onClick={e => { e.stopPropagation(); navigate(route); }}
-                            title="View resource metrics"
+                            title={a.resource}
                           >
-                            {a.resource || "—"}
+                            {a.resource_name || a.resource || "—"}
                           </span>
                         ) : (
-                          <span>{a.resource || "—"}</span>
+                          <span title={a.resource}>
+                            {a.resource_name || a.resource || "—"}
+                          </span>
+                        )}
+                        {a.account_name && (
+                          <div style={{fontSize:"11px", color:"#888"}}>
+                            {a.account_name}
+                          </div>
                         )}
                       </td>
 
@@ -456,6 +487,38 @@ function fmt(v) {
   const n = parseFloat(v);
   if (isNaN(n)) return String(v);
   return n % 1 === 0 ? String(n) : n.toFixed(1);
+}
+
+const METRIC_LABELS = {
+  cpuutilization:    "CPU %",
+  networkin:         "Net In",
+  networkout:        "Net Out",
+  diskreadbytes:     "Disk Read",
+  diskwritebytes:    "Disk Write",
+  volumequeuelength: "Queue Len",
+  burstbalance:      "Burst Bal",
+  dbconnections:     "DB Conns",
+  freestorage:       "Free Storage",
+  readiops:          "Read IOPS",
+  writeiops:         "Write IOPS",
+  readlatency:       "Read Latency",
+  writelatency:      "Write Latency",
+  freeablememory:    "Free Mem",
+  errors5xx:         "5xx Errors",
+  errors4xx:         "4xx Errors",
+  responselatency:   "Latency",
+  healthyhosts:      "Healthy Hosts",
+  unhealthyhosts:    "Unhealthy Hosts",
+  requestcount:      "Requests",
+  memutilization:    "Mem %",
+  invocations:       "Invocations",
+  errors:            "Errors",
+  duration:          "Duration",
+  throttles:         "Throttles",
+};
+
+function metricLabel(name) {
+  return METRIC_LABELS[(name || "").toLowerCase()] || name;
 }
 
 function shortDateTime(iso) {

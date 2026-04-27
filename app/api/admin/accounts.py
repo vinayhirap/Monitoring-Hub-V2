@@ -4,7 +4,7 @@ from app.db import get_connection
 import datetime
 import json
 
-router = APIRouter(prefix="/admin/accounts", tags=["Admin - Accounts"])
+router = APIRouter(prefix="/api/admin/accounts", tags=["Admin - Accounts"])
 
 
 def _serialize(obj):
@@ -60,23 +60,6 @@ def list_accounts():
     return [_serialize(r) for r in rows]
 
 
-@router.get("/queue")
-def get_queue():
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT id, account_name, account_id, status, created_at
-        FROM aws_accounts
-        WHERE status IN ('pending', 'active')
-        ORDER BY created_at DESC
-        LIMIT 20
-    """)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [_serialize(r) for r in rows]
-
-
 @router.get("/{account_id}")
 def get_account(account_id: int):
     conn   = get_connection()
@@ -106,8 +89,9 @@ def add_account(payload: dict = Body(...)):
     region = region.split(" ")[0]
     role_arn    = (payload.get("role_arn") or payload.get("iam_role_arn") or "").strip()
     external_id = (payload.get("external_id") or "").strip()
+    owner_team  = (payload.get("owner_team") or "").strip()
+    environment = (payload.get("environment") or "PROD").strip().upper()
     description = (payload.get("description") or "").strip()
-
     if role_arn.lower() in ["n/a", "none", "na", ""]:
         role_arn = ""
 
@@ -117,14 +101,16 @@ def add_account(payload: dict = Body(...)):
         cursor.execute("""
             INSERT INTO aws_accounts
               (account_name, account_id, role_arn, external_id,
-               default_region, status, description)
-            VALUES (%s, %s, %s, %s, %s, 'active', %s)
+               default_region, status, description, owner_team, environment)
+            VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, %s)
             ON DUPLICATE KEY UPDATE
               account_name   = VALUES(account_name),
               default_region = VALUES(default_region),
               status         = 'active',
-              description    = VALUES(description)
-        """, (account_name, account_id, role_arn, external_id, region, description))
+              description    = VALUES(description),
+              owner_team     = VALUES(owner_team),
+              environment    = VALUES(environment)
+        """, (account_name, account_id, role_arn, external_id, region, description, owner_team, environment))
         conn.commit()
         new_id = cursor.lastrowid or 0
     except Exception as e:

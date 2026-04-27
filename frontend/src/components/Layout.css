@@ -23,7 +23,7 @@
 body {
   background: var(--bg-base);
   color: var(--text);
-  font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -815,4 +815,75 @@ body {
 [data-theme="light"] .recharts-cartesian-grid-horizontal line,
 [data-theme="light"] .recharts-cartesian-grid-vertical line {
   stroke: rgba(99,130,190,0.1);
+}
+/* ── Light mode comprehensive fixes (applied by patch script) ───────────── */
+[data-theme="light"] .account-card        { background: #ffffff; border-color: rgba(99,130,190,0.18); color: #0f1c35; }
+[data-theme="light"] .account-card:hover  { background: #f5f8fd; }
+[data-theme="light"] .tag-blue            { background: rgba(0,119,204,0.08);  color: #0077cc; }
+[data-theme="light"] .tag-purple          { background: rgba(107,73,204,0.08); color: #6b49cc; }
+[data-theme="light"] .tag-muted           { background: rgba(99,130,190,0.1);  color: #4a6080; }
+[data-theme="light"] .sum-tile            { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .sum-label           { color: #6b84a8; }
+[data-theme="light"] .sum-value           { color: #0f1c35; }
+[data-theme="light"] .sum-tile.sum-green  { background: rgba(0,135,90,0.04);  border-color: rgba(0,135,90,0.25); }
+[data-theme="light"] .sum-tile.sum-yellow { background: rgba(184,110,0,0.04); border-color: rgba(184,110,0,0.25); }
+[data-theme="light"] .sum-tile.sum-red    { background: rgba(192,57,43,0.04); border-color: rgba(192,57,43,0.25); }
+[data-theme="light"] .sum-tile.sum-green  .sum-value { color: #00875a; }
+[data-theme="light"] .sum-tile.sum-yellow .sum-value { color: #b86e00; }
+[data-theme="light"] .sum-tile.sum-red    .sum-value { color: #c0392b; }
+[data-theme="light"] .view-link           { color: #0077cc; }
+[data-theme="light"] .f-btn               { color: #3d5070; border-color: rgba(99,130,190,0.25); }
+[data-theme="light"] .f-btn:hover, [data-theme="light"] .f-btn.f-active { background: #0077cc; color: #fff; border-color: #0077cc; }
+[data-theme="light"] .alert-strip         { background: rgba(192,57,43,0.05); border-color: rgba(192,57,43,0.2); }
+[data-theme="light"] .ov-loading          { color: #6b84a8; }
+[data-theme="light"] .ov-empty            { color: #6b84a8; }
+[data-theme="light"] .ov-link             { color: #0077cc; }
+[data-theme="light"] .alerts-header h1    { color: #0f1c35; }
+[data-theme="light"] .alerts-sub          { color: #6b84a8; }
+[data-theme="light"] .alerts-table-wrap   { border-color: rgba(99,130,190,0.18); background: #ffffff; }
+[data-theme="light"] .alerts-table thead  { background: #f0f4fa; }
+[data-theme="light"] .alerts-table th     { color: #6b84a8; border-bottom-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .alerts-table td     { border-bottom-color: rgba(99,130,190,0.08); }
+[data-theme="light"] .alert-metric        { color: #0f1c35; }
+[data-theme="light"] .alert-resource      { color: #4a6080; }
+[data-theme="light"] .atab               { color: #6b84a8; }
+[data-theme="light"] .atab:hover          { color: #0f1c35; border-color: rgba(99,130,190,0.25); }
+[data-theme="light"] .atab-active         { background: rgba(184,110,0,0.08); border-color: rgba(184,110,0,0.3); color: #b86e00; }
+[data-theme="light"] .alerts-search       { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #0f1c35; }
+[data-theme="light"] .btn-refresh         { color: #4a6080; border-color: rgba(99,130,190,0.2); background: #ffffff; }
+[data-theme="light"] .btn-refresh:hover   { border-color: rgba(0,119,204,0.35); color: #0077cc; }
+[data-theme="light"] .settings-card       { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .card-title          { color: #0f1c35; }
+[data-theme="light"] .thresh-label        { color: #0f1c35; }
+[data-theme="light"] .thresh-hint         { color: #6b84a8; }
+[data-theme="light"] .thresh-input        { background: #f5f8fd; border-color: rgba(99,130,190,0.25); color: #0f1c35; }
+[data-theme="light"] .thresh-unit         { color: #6b84a8; }
+[data-theme="light"] .threshold-item      { background: #f8fafd; border-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .compliance-page h1  { color: #0f1c35; }
+[data-theme="light"] .audit-card          { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .bar-title           { color: #4a6080; }
+[data-theme="light"] .audit-row           { border-bottom-color: rgba(99,130,190,0.08); }
+[data-theme="light"] .audit-row:hover     { background: rgba(0,119,204,0.03); }
+[data-theme="light"] .ar-time             { color: #8099bb; }
+[data-theme="light"] .ar-action           { color: #0f1c35; }
+[data-theme="light"] .ar-actor            { color: #0077cc; }
+[data-theme="light"] .ar-icon-wrap        { background: #f0f4fa; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .c-btn               { background: #ffffff; border-color: rgba(99,130,190,0.2); color: #4a6080; }
+[data-theme="light"] .c-btn:hover         { border-color: rgba(0,119,204,0.3); color: #0077cc; }
+[data-theme="light"] .c-btn-primary       { background: #0077cc; color: #fff; border-color: #0077cc; }
+[data-theme="light"] .um-card             { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .um-name             { color: #0f1c35; }
+[data-theme="light"] .um-meta             { color: #6b84a8; }
+[data-theme="light"] .perm-tag.granted    { background: rgba(0,135,90,0.08); border-color: rgba(0,135,90,0.2); color: #00875a; }
+[data-theme="light"] .perm-tag.denied     { background: rgba(192,57,43,0.07); border-color: rgba(192,57,43,0.18); color: #c0392b; }
+[data-theme="light"] .ob-card             { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .field-label         { color: #3d5070; }
+[data-theme="light"] .ob-input            { background: #f5f8fd; border-color: rgba(99,130,190,0.25); color: #0f1c35; }
+[data-theme="light"] .ob-input::placeholder { color: #a0b0c8; }
+/* NOC mode button active state */
+.noc-active-btn {
+  background: rgba(0,199,255,0.12) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 700 !important;
 }

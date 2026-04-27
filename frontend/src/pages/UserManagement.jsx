@@ -2,7 +2,7 @@
 import { useAuth } from "../auth/AuthContext";
 import "./UserManagement.css";
 
-const BASE = "http://localhost:8000";
+const BASE = "";
 
 async function apiFetch(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -16,10 +16,10 @@ async function apiFetch(path, options = {}) {
   return res.json();
 }
 
-const ADMIN_PERMS   = ["Onboard Accounts","Manage Users","View All Accounts","Configure Alerts","Audit Logs","Cost Explorer","Service Drilldown"];
-const EDITOR_PERMS  = ["View All Accounts","Configure Alerts","Cost Explorer","Service Drilldown"];
-const EDITOR_DENIED = ["Onboard Accounts","Manage Users","Audit Logs"];
-const VIEWER_PERMS  = ["View All Accounts","View Alerts","Cost Explorer","Service Drilldown"];
+const ADMIN_PERMS   = ["Onboard Accounts","Manage Users","View All Accounts","Configure Alerts","Audit Logs","Service Drilldown"];
+const EDITOR_PERMS  = ["View All Accounts","Configure Alerts","Onboard Accounts","Service Drilldown"];
+const EDITOR_DENIED = ["Manage Users","Audit Logs"];
+const VIEWER_PERMS  = ["View All Accounts","View Alerts","Service Drilldown"];
 const VIEWER_DENIED = ["Onboard Accounts","Manage Users","Audit Logs","Configure Alerts"];
 
 const INITIAL_FORM = { username: "", password: "", role: "viewer", accountIds: [] };
@@ -313,7 +313,7 @@ export default function UserManagement() {
       {tab === "roles" && (
         <div className="roles-grid">
           <RoleCard title="Admin Role"  icon="🔧" color="orange" desc="Unrestricted access to all platform features including account onboarding, user management, alert configuration, and audit logs." granted={ADMIN_PERMS} denied={[]} />
-          <RoleCard title="Editor Role" icon="✏️" color="purple" desc="Monitor infrastructure and configure alerts. Cannot onboard accounts, manage users, or access audit logs."                        granted={EDITOR_PERMS} denied={EDITOR_DENIED} />
+          <RoleCard title="Editor Role" icon="✏️" color="purple" desc="Monitor infrastructure, configure alerts, and onboard accounts. Cannot manage users or access audit logs."                        granted={EDITOR_PERMS} denied={EDITOR_DENIED} />
           <RoleCard title="Viewer Role" icon="👁"  color="blue"   desc="Monitor account health, view metrics, drill into services, and read alerts. Cannot modify configuration or onboard accounts."  granted={VIEWER_PERMS} denied={VIEWER_DENIED} />
         </div>
       )}

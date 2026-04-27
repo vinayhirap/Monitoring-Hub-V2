@@ -4,10 +4,7 @@ from app.aws.sts import assume_role
 import boto3
 import json
 
-REGION = "ap-south-2"
-
-
-def discover_aurogov_ec2():
+def discover_ec2():
     """
     Discover EC2 + attached resources.
     Local dev → uses boto3.Session()
@@ -44,7 +41,8 @@ def discover_aurogov_ec2():
                 account.get("external_id")
             )
 
-        ec2 = session.client("ec2", region_name=REGION)
+        region = account.get("default_region")
+        ec2 = session.client("ec2", region_name=region)
         paginator = ec2.get_paginator("describe_instances")
 
         for page in paginator.paginate():

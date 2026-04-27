@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import "./AccountOnboarding.css";
 
-const BASE = "http://localhost:8000";
+const BASE = "";
 
 const ALL_REGIONS = [
   { id: "ap-south-1",     label: "ap-south-1 (Mumbai)" },
@@ -59,7 +59,7 @@ function Field({ id, label, required, error, children }) {
 
 async function refreshQueue(setQueue) {
   try {
-    const r = await fetch(`${BASE}/admin/accounts`);
+    const r = await fetch(`${BASE}/api/admin/accounts`);
     if (!r.ok) throw new Error();
     const all = await r.json();
     // Only show truly pending/processing — not active ones
@@ -132,7 +132,7 @@ export default function AccountOnboarding() {
         access_key:     form.auth_method === "access_keys" ? form.access_key.trim()   : "",
         secret_key:     form.auth_method === "access_keys" ? form.secret_key.trim()   : "",
       };
-      const res = await fetch(`${BASE}/admin/accounts`, {
+      const res = await fetch(`${BASE}/api/admin/accounts`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(body),

@@ -3,7 +3,6 @@ import boto3, logging, time, math
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
-DEFAULT_REGION = "ap-south-2"
 
 _cache: dict = {}
 _CACHE_TTL   = 60
@@ -18,7 +17,7 @@ def _cached(key: str, fn):
     return result
 
 
-def get_session(region=DEFAULT_REGION):
+def get_session(region=None):
     return boto3.Session(region_name=region)
 
 
@@ -35,7 +34,7 @@ def _smart_period(hours: int) -> int:
 
 
 # ── EC2 ───────────────────────────────────────────────────────
-def collect_ec2_instances(region=DEFAULT_REGION) -> list:
+def collect_ec2_instances(region=None) -> list:
     return _cached(f"ec2_{region}", lambda: _ec2_raw(region))
 
 def _ec2_raw(region) -> list:
@@ -76,7 +75,7 @@ def _ec2_raw(region) -> list:
 
 
 # ── EBS ───────────────────────────────────────────────────────
-def collect_ebs_volumes(region=DEFAULT_REGION) -> list:
+def collect_ebs_volumes(region=None) -> list:
     return _cached(f"ebs_{region}", lambda: _ebs_raw(region))
 
 def _ebs_raw(region) -> list:
@@ -122,7 +121,7 @@ def _ebs_raw(region) -> list:
 
 
 # ── RDS ───────────────────────────────────────────────────────
-def collect_rds_instances(region=DEFAULT_REGION) -> list:
+def collect_rds_instances(region=None) -> list:
     return _cached(f"rds_{region}", lambda: _rds_raw(region))
 
 def _rds_raw(region) -> list:
@@ -148,7 +147,7 @@ def _rds_raw(region) -> list:
 
 
 # ── S3 ────────────────────────────────────────────────────────
-def collect_s3_buckets(region=DEFAULT_REGION) -> list:
+def collect_s3_buckets(region=None) -> list:
     return _cached("s3_global", lambda: _s3_raw())
 
 def _s3_raw() -> list:
@@ -272,8 +271,14 @@ def get_s3_metric_series(bucket_name: str, hours: int = 24) -> dict:
 
 
 # ── ELB ───────────────────────────────────────────────────────
-def collect_elb(region=DEFAULT_REGION) -> list:
-    return _cached(f"elb_{region}", lambda: _elb_raw(region))
+def collect_elb(region=None) -> list:
+    key = f"elb_{region}"
+    now = time.time()
+    if key in _cache and now - _cache[key]["ts"] < _CACHE_TTL:
+        return _cache[key]["data"]
+    result = _elb_raw(region)
+    _cache[key] = {"data": result, "ts": now}
+    return result
 
 def _elb_raw(region) -> list:
     try:
@@ -299,8 +304,14 @@ def _elb_raw(region) -> list:
 
 
 # ── ECS ───────────────────────────────────────────────────────
-def collect_ecs_clusters(region=DEFAULT_REGION) -> list:
-    return _cached(f"ecs_{region}", lambda: _ecs_raw(region))
+def collect_ecs_clusters(region=None) -> list:
+    key = f"ecs_{region}"
+    now = time.time()
+    if key in _cache and now - _cache[key]["ts"] < _CACHE_TTL:
+        return _cache[key]["data"]
+    result = _ecs_raw(region)
+    _cache[key] = {"data": result, "ts": now}  # cache even empty/error result
+    return result
 
 def _ecs_raw(region) -> list:
     try:
@@ -349,12 +360,18 @@ def _ecs_raw(region) -> list:
         logger.info(f"ECS: {len(out)} clusters in {region}")
         return out
     except Exception as e:
-        logger.error(f"ECS [{region}]: {e}"); return []
-
+        logger.warning(f"ECS [{region}]: {e}")
+        return []
 
 # ── Lambda ────────────────────────────────────────────────────
-def collect_lambda_functions(region=DEFAULT_REGION) -> list:
-    return _cached(f"lambda_{region}", lambda: _lambda_raw(region))
+def collect_lambda_functions(region=None) -> list:
+    key = f"lambda_{region}"
+    now = time.time()
+    if key in _cache and now - _cache[key]["ts"] < _CACHE_TTL:
+        return _cache[key]["data"]
+    result = _lambda_raw(region)
+    _cache[key] = {"data": result, "ts": now}
+    return result
 
 def _lambda_raw(region) -> list:
     try:
@@ -374,11 +391,12 @@ def _lambda_raw(region) -> list:
                 })
         return out
     except Exception as e:
-        logger.error(f"Lambda [{region}]: {e}"); return []
+        logger.warning(f"Lambda [{region}]: {e}")
+        return []
 
 
 # ── Metric series — EC2 ───────────────────────────────────────
-def get_ec2_metric_series(instance_id, region=DEFAULT_REGION, hours=6) -> dict:
+def get_ec2_metric_series(instance_id, region=None, hours=6) -> dict:
     try:
         cw     = boto3.client("cloudwatch", region_name=region)
         end    = datetime.now(timezone.utc)
@@ -407,12 +425,12 @@ def get_ec2_metric_series(instance_id, region=DEFAULT_REGION, hours=6) -> dict:
             "period_secs":  period,
         }
     except Exception as e:
-        logger.error(f"EC2 metrics [{instance_id}]: {e}")
+        logger.warning(f"EC2 metrics [{instance_id}]: {e}")
         return {"instance_id": instance_id, "cpu": [], "network_in": [], "network_out": [], "disk_read": [], "disk_write": []}
 
 
 # ── Metric series — EBS ───────────────────────────────────────
-def _get_ebs_metric_series(volume_id, region=DEFAULT_REGION, hours=6) -> dict:
+def _get_ebs_metric_series(volume_id, region=None, hours=6) -> dict:
     try:
         cw     = boto3.client("cloudwatch", region_name=region)
         end    = datetime.now(timezone.utc)
@@ -441,12 +459,12 @@ def _get_ebs_metric_series(volume_id, region=DEFAULT_REGION, hours=6) -> dict:
             "period_secs":   period,
         }
     except Exception as e:
-        logger.error(f"EBS metrics [{volume_id}]: {e}")
+        logger.warning(f"EBS metrics [{volume_id}]: {e}")
         return {"volume_id": volume_id, "read_ops": [], "write_ops": [], "read_bytes": [], "write_bytes": [], "queue_length": [], "burst_balance": []}
 
 
 # ── Metric series — Lambda ────────────────────────────────────
-def _get_lambda_metric_series(function_name, region=DEFAULT_REGION, hours=6) -> dict:
+def _get_lambda_metric_series(function_name, region=None, hours=6) -> dict:
     try:
         cw     = boto3.client("cloudwatch", region_name=region)
         end    = datetime.now(timezone.utc)
@@ -475,12 +493,12 @@ def _get_lambda_metric_series(function_name, region=DEFAULT_REGION, hours=6) -> 
             "period_secs":   period,
         }
     except Exception as e:
-        logger.error(f"Lambda metrics [{function_name}]: {e}")
+        logger.warning(f"Lambda metrics [{function_name}]: {e}")
         return {"function_name": function_name, "invocations": [], "errors": [], "duration": [], "throttles": [], "concurrent": []}
 
 
 # ── Metric series — RDS ───────────────────────────────────────
-def _get_rds_metric_series(db_id, region=DEFAULT_REGION, hours=6) -> dict:
+def _get_rds_metric_series(db_id, region=None, hours=6) -> dict:
     try:
         cw     = boto3.client("cloudwatch", region_name=region)
         end    = datetime.now(timezone.utc)
@@ -511,9 +529,146 @@ def _get_rds_metric_series(db_id, region=DEFAULT_REGION, hours=6) -> dict:
             "period_secs":     period,
         }
     except Exception as e:
-        logger.error(f"RDS metrics [{db_id}]: {e}")
+        logger.warning(f"RDS metrics [{db_id}]: {e}")
         return {"db_id": db_id, "cpu": [], "free_storage": [], "db_connections": [], "read_iops": [], "write_iops": [], "read_latency": [], "write_latency": [], "freeable_memory": []}
 
+# ── Metric series — ELB ───────────────────────────────────────
+def _get_elb_metric_series(lb_name: str, region=None, hours=6) -> dict:
+    """
+    ALB metrics via AWS/ApplicationELB namespace.
+    lb_name should be the LoadBalancerName (not ARN).
+    The LoadBalancer dimension value must be the ARN suffix: app/<name>/<id>
+    We try by name first; if no data, return empty arrays gracefully.
+    """
+    try:
+        elbv2  = boto3.client("elbv2", region_name=region)
+        cw     = boto3.client("cloudwatch", region_name=region)
+        end    = datetime.now(timezone.utc)
+        start  = end - timedelta(hours=hours)
+        period = _smart_period(hours)
+
+        # Resolve ARN suffix for CW dimension
+        lb_dim_value = lb_name  # fallback
+        try:
+            lbs = elbv2.describe_load_balancers(Names=[lb_name]).get("LoadBalancers", [])
+            if lbs:
+                arn = lbs[0]["LoadBalancerArn"]
+                # CW dimension = "app/<name>/<id>" (everything after "loadbalancer/")
+                lb_dim_value = arn.split("loadbalancer/")[-1]
+        except Exception:
+            pass
+
+        dims = [{"Name": "LoadBalancer", "Value": lb_dim_value}]
+
+        def s(metric, stat="Sum", namespace="AWS/ApplicationELB"):
+            r = cw.get_metric_statistics(
+                Namespace=namespace, MetricName=metric, Dimensions=dims,
+                StartTime=start, EndTime=end, Period=period, Statistics=[stat],
+            )
+            return sorted(
+                [{"t": p["Timestamp"].isoformat(), "v": round(p[stat], 4)} for p in r["Datapoints"]],
+                key=lambda x: x["t"]
+            )
+
+        def sa(metric, namespace="AWS/ApplicationELB"):
+            return s(metric, stat="Average", namespace=namespace)
+
+        return {
+            "lb_name":           lb_name,
+            "requests":          s("RequestCount"),
+            "errors_5xx":        s("HTTPCode_Target_5XX_Count"),
+            "errors_4xx":        s("HTTPCode_Target_4XX_Count"),
+            "errors_elb_5xx":    s("HTTPCode_ELB_5XX_Count"),
+            "latency":           sa("TargetResponseTime"),
+            "healthy_hosts":     sa("HealthyHostCount"),
+            "unhealthy_hosts":   sa("UnHealthyHostCount"),
+            "active_connections":s("ActiveConnectionCount"),
+            "new_connections":   s("NewConnectionCount"),
+            "period_hours":      hours,
+            "period_secs":       period,
+        }
+    except Exception as e:
+        logger.warning(f"ELB metrics [{lb_name}]: {e}")
+        return {
+            "lb_name": lb_name,
+            "requests": [], "errors_5xx": [], "errors_4xx": [],
+            "errors_elb_5xx": [], "latency": [], "healthy_hosts": [],
+            "unhealthy_hosts": [], "active_connections": [], "new_connections": [],
+            "period_hours": hours, "period_secs": 60,
+        }
+
+
+# ── Metric series — ECS ───────────────────────────────────────
+def _get_ecs_metric_series(cluster_name: str, service_name: str = None, region=None, hours=6) -> dict:
+    """
+    ECS metrics via AWS/ECS namespace.
+    If service_name provided: per-service CPU+Memory.
+    If not: cluster-level aggregated.
+    """
+    try:
+        cw     = boto3.client("cloudwatch", region_name=region)
+        end    = datetime.now(timezone.utc)
+        start  = end - timedelta(hours=hours)
+        period = _smart_period(hours)
+
+        # Build dimensions
+        if service_name:
+            dims = [
+                {"Name": "ClusterName", "Value": cluster_name},
+                {"Name": "ServiceName", "Value": service_name},
+            ]
+        else:
+            dims = [{"Name": "ClusterName", "Value": cluster_name}]
+
+        def sa(metric):
+            r = cw.get_metric_statistics(
+                Namespace="AWS/ECS", MetricName=metric, Dimensions=dims,
+                StartTime=start, EndTime=end, Period=period, Statistics=["Average"],
+            )
+            return sorted(
+                [{"t": p["Timestamp"].isoformat(), "v": round(p["Average"], 2)} for p in r["Datapoints"]],
+                key=lambda x: x["t"]
+            )
+
+        # ContainerInsights metrics (requires CW Container Insights enabled)
+        def ci(metric):
+            """Container Insights metrics — may be empty if not enabled."""
+            ci_dims = dims.copy()
+            try:
+                r = cw.get_metric_statistics(
+                    Namespace="ECS/ContainerInsights", MetricName=metric, Dimensions=ci_dims,
+                    StartTime=start, EndTime=end, Period=period, Statistics=["Average"],
+                )
+                return sorted(
+                    [{"t": p["Timestamp"].isoformat(), "v": round(p["Average"], 2)} for p in r["Datapoints"]],
+                    key=lambda x: x["t"]
+                )
+            except Exception:
+                return []
+
+        return {
+            "cluster_name":       cluster_name,
+            "service_name":       service_name,
+            "cpu_utilization":    sa("CPUUtilization"),
+            "mem_utilization":    sa("MemoryUtilization"),
+            "running_task_count": ci("RunningTaskCount"),
+            "pending_task_count": ci("PendingTaskCount"),
+            "desired_task_count": ci("DesiredTaskCount"),
+            "cpu_reserved":       ci("CpuReserved"),
+            "mem_reserved":       ci("MemoryReserved"),
+            "period_hours":       hours,
+            "period_secs":        period,
+        }
+    except Exception as e:
+        logger.warning(f"ECS metrics [{cluster_name}/{service_name}]: {e}")
+        return {
+            "cluster_name": cluster_name, "service_name": service_name,
+            "cpu_utilization": [], "mem_utilization": [],
+            "running_task_count": [], "pending_task_count": [],
+            "desired_task_count": [], "cpu_reserved": [], "mem_reserved": [],
+            "period_hours": hours, "period_secs": 60,
+        }
+    
 
 # ── Per-resource threshold check (writes to alerts table) ─────
 def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> list:
@@ -638,17 +793,42 @@ def check_and_write_alerts(account_id: int, region: str, thresholds: list) -> li
 
 
 # ── Account summary ───────────────────────────────────────────
-def get_account_summary(region=DEFAULT_REGION) -> dict:
-    ec2 = collect_ec2_instances(region)
-    ebs = collect_ebs_volumes(region)
-    rds = collect_rds_instances(region)
-    lmb = collect_lambda_functions(region)
-    s3  = collect_s3_buckets(region)
-    elb = collect_elb(region)
-    ecs = collect_ecs_clusters(region)
+def get_account_summary(region=None) -> dict:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    collectors = {
+            "ec2": lambda: collect_ec2_instances(region),
+            "ebs": lambda: collect_ebs_volumes(region),
+            "rds": lambda: collect_rds_instances(region),
+            "lmb": lambda: collect_lambda_functions(region),
+            "s3":  lambda: collect_s3_buckets(region),
+            "elb": lambda: collect_elb(region),
+            "ecs": lambda: collect_ecs_clusters(region),
+        }
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(fn): key for key, fn in collectors.items()}
+        for f in as_completed(futures):
+            key = futures[f]
+            try:
+                results[key] = f.result()
+            except Exception as e:
+                logger.error(f"Collector [{key}] error: {e}")
+                results[key] = []
+
+    ec2  = results.get("ec2", [])
+    ebs  = results.get("ebs", [])
+    rds  = results.get("rds", [])
+    lmb  = results.get("lmb", [])
+    s3   = results.get("s3",  [])
+    elb  = results.get("elb", [])
+    ecs  = results.get("ecs", [])
+
     run  = [i for i in ec2 if i["state"] == "running"]
     stop = [i for i in ec2 if i["state"] == "stopped"]
     avg  = round(sum(i["cpu_utilization"] for i in run) / len(run), 2) if run else 0.0
+
     return {
         "ec2_total":    len(ec2),  "ec2_running":  len(run),
         "ec2_stopped":  len(stop), "ec2_avg_cpu":  avg,

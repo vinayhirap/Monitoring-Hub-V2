@@ -211,3 +211,45 @@
 .obs-status-pending  { background: rgba(255,201,64,0.12); color: #ffc940; }
 .obs-status-active   { background: rgba(0,229,160,0.12);  color: #00e5a0; }
 .obs-status-error    { background: rgba(255,77,109,0.12);  color: #ff4d6d; }
+
+/* ── Light mode fixes ── */
+[data-theme="light"] .onboard-hero h1 { color: #0f1c35; }
+[data-theme="light"] .onboard-hero p  { color: #4a6080; }
+
+[data-theme="light"] .onboard-form    { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .ob-section      { border-bottom-color: rgba(99,130,190,0.12); }
+[data-theme="light"] .ob-section-title { color: #8099bb; }
+
+[data-theme="light"] .ob-field label  { color: #4a6080; }
+[data-theme="light"] .ob-field input,
+[data-theme="light"] .ob-field select,
+[data-theme="light"] .ob-field textarea {
+  background: #f5f8fd;
+  border-color: rgba(99,130,190,0.22);
+  color: #0f1c35;
+}
+[data-theme="light"] .ob-field input::placeholder,
+[data-theme="light"] .ob-field textarea::placeholder { color: #a0b0c8; }
+[data-theme="light"] .ob-field input:focus,
+[data-theme="light"] .ob-field select:focus,
+[data-theme="light"] .ob-field textarea:focus {
+  border-color: rgba(0,119,204,0.4);
+  box-shadow: 0 0 0 3px rgba(0,119,204,0.06);
+}
+
+[data-theme="light"] .ob-cred-notice  { background: rgba(0,119,204,0.04); border-color: rgba(0,119,204,0.12); color: #4a6080; }
+[data-theme="light"] .ob-auth-btn     { background: #f5f8fd; border-color: rgba(99,130,190,0.2); color: #4a6080; }
+[data-theme="light"] .ob-auth-btn:hover { color: #0f1c35; }
+[data-theme="light"] .ob-auth-active  { background: rgba(0,119,204,0.1); border-color: rgba(0,119,204,0.3); color: #0077cc; }
+[data-theme="light"] .ob-btn-ghost    { border-color: rgba(99,130,190,0.22); color: #4a6080; }
+[data-theme="light"] .ob-btn-ghost:hover { color: #0f1c35; }
+[data-theme="light"] .ob-actions      { border-top-color: rgba(99,130,190,0.12); }
+
+[data-theme="light"] .onboard-sidebar { background: #ffffff; border-color: rgba(99,130,190,0.18); }
+[data-theme="light"] .obs-header      { border-bottom-color: rgba(99,130,190,0.12); }
+[data-theme="light"] .obs-title       { color: #8099bb; }
+[data-theme="light"] .obs-empty       { color: #4a6080; }
+[data-theme="light"] .obs-empty-sub   { color: #8099bb; }
+[data-theme="light"] .obs-item        { background: #f5f8fd; border-color: rgba(99,130,190,0.15); }
+[data-theme="light"] .obs-item-name   { color: #0f1c35; }
+[data-theme="light"] .obs-item-id     { color: #8099bb; }

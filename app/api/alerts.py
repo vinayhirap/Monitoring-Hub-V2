@@ -19,41 +19,43 @@ def _invalidate_cache():
     _alerts_cache["data"] = None
     _alerts_cache["ts"]   = 0
 
-
 def _fetch_alerts_from_db():
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
-    # FORCE index on triggered_at for speed — ensure index exists:
-    # ALTER TABLE alerts ADD INDEX idx_triggered (triggered_at DESC);
     cursor.execute("""
         SELECT
-            id,
-            resource_id                             AS resource,
-            metric_name,
-            severity,
-            status,
-            current_value,
-            threshold,
-            value,
-            -- Ensure UTC timezone in output so frontend can convert correctly
-            CONVERT_TZ(triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
-            CONVERT_TZ(resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
-            acked,
-            muted_until,
-            environment
-        FROM alerts
-        ORDER BY triggered_at DESC
+            a.id,
+            a.resource_id                          AS resource,
+            COALESCE(a.region, acc.default_region) AS region,
+            a.metric_name,
+            a.severity,
+            a.status,
+            a.current_value,
+            a.threshold,
+            a.value,
+            CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
+            CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
+            a.acked,
+            a.muted_until,
+            a.environment,
+            r.resource_type                        AS service,
+            COALESCE(r.name, a.resource_id)        AS resource_name,
+            acc.account_name,
+            acc.id                                 AS account_id
+        FROM alerts a
+        LEFT JOIN resources r      ON r.resource_id = a.resource_id
+        LEFT JOIN aws_accounts acc ON acc.id = r.aws_account_id                   
+
+        ORDER BY a.triggered_at DESC
         LIMIT 200
     """)
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    # Append 'Z' suffix so JS Date() parses as UTC — no local-time shift
     for r in rows:
         for field in ("triggered_at", "resolved_at"):
             if r.get(field) and isinstance(r[field], datetime.datetime):
-                # MySQL returns naive datetime — treat as UTC, add Z
                 r[field] = r[field].strftime("%Y-%m-%dT%H:%M:%SZ")
             elif r.get(field) and isinstance(r[field], str) and not r[field].endswith("Z"):
                 r[field] = r[field].rstrip("+00:00").rstrip(" UTC") + "Z"
@@ -89,23 +91,30 @@ def open_alerts():
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
         SELECT
-            id,
-            resource_id AS resource,
-            metric_name,
-            severity,
-            status,
-            current_value,
-            threshold,
-            value,
-            CONVERT_TZ(triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
-            CONVERT_TZ(resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
-            acked,
-            environment
-        FROM alerts
-        WHERE resolved_at IS NULL
-        ORDER BY
-            FIELD(severity, 'CRITICAL', 'WARNING', 'INFO'),
-            triggered_at DESC
+            a.id,
+            a.resource_id                          AS resource,
+            a.metric_name,
+            a.severity,
+            a.status,
+            a.current_value,
+            a.threshold,
+            a.value,
+            CONVERT_TZ(a.triggered_at, @@session.time_zone, '+00:00') AS triggered_at,
+            CONVERT_TZ(a.resolved_at,  @@session.time_zone, '+00:00') AS resolved_at,
+            a.acked,
+            a.environment,
+            r.resource_type                        AS service,
+            COALESCE(r.name, a.resource_id)        AS resource_name,
+            acc.account_name,
+            acc.id                                 AS account_id,
+            COALESCE(a.region, acc.default_region) AS region
+        FROM alerts a
+        LEFT JOIN resources r      ON r.resource_id = a.resource_id
+        LEFT JOIN aws_accounts acc ON acc.id = r.aws_account_id
+        WHERE a.resolved_at IS NULL
+            ORDER BY
+            FIELD(a.severity, 'CRITICAL', 'WARNING', 'INFO'),
+            a.triggered_at DESC
         LIMIT 100
     """)
     rows = cursor.fetchall()

@@ -12,7 +12,7 @@ import "./Layout.css";
 const NAV_ITEMS = [
   { to: "/overview",   label: "Overview",           icon: OverviewIcon,   roles: ["admin","editor","viewer"] },
   { to: "/alerts",     label: "Alerts",             icon: AlertIcon,      roles: ["admin","editor","viewer"], badge: true },
-  { to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon,    roles: ["admin"] },
+  { to: "/onboarding", label: "Account Onboarding", icon: OnboardIcon,    roles: ["admin","editor"] },
   { to: "/users",      label: "User Management",    icon: UsersIcon,      roles: ["admin"] },
   { to: "/compliance", label: "Compliance",         icon: ComplianceIcon, roles: ["admin","editor","viewer"] },
   { to: "/settings",   label: "Settings",           icon: SettingsIcon,   roles: ["admin","editor"] },
@@ -39,7 +39,7 @@ export default function Layout() {
   useEffect(() => {
     async function fetchCount() {
       try {
-        const res = await fetch("http://localhost:8000/api/alerts/open");
+        const res = await fetch("/api/alerts/open");
         if (!res.ok) return;
         const data = await res.json();
         const arr = Array.isArray(data) ? data : (data.alerts ?? []);
@@ -101,7 +101,7 @@ export default function Layout() {
             <span className="lup-label">Last updated</span>
             <span className="lup-time">
               {now.toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })},{" "}
-              {timeStr.split(":").slice(0, 2).join(":")} PM
+              {timeStr.split(":").slice(0, 3).join(":")}
             </span>
           </div>
         </div>

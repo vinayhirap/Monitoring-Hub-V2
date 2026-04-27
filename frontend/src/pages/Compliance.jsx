@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useCallback } from "react";
 import { getAuditLogs } from "../api/api";
+import { useAuth } from "../auth/AuthContext";
 import "./Compliance.css";
 
 const ACTION_ICONS = {
@@ -75,6 +76,8 @@ function AuditRow({ log }) {
 }
 
 export default function Compliance() {
+  const { user } = useAuth();
+  const isAdmin = (user?.role || "viewer").toLowerCase() === "admin";
   const [logs,        setLogs]        = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState(null);
@@ -124,7 +127,7 @@ export default function Compliance() {
         l.action ?? "",
         l.actor  ?? "",
         l.payload?.detail ?? "",
-        l.payload?.role   ?? "",
+        l.payload?.actor_role ?? l.payload?.role ?? (l.actor === "admin" ? "ADMIN" : "SYSTEM"),
       ])
     ];
     const csv = rows
@@ -167,9 +170,11 @@ export default function Compliance() {
             <span className="ar-label">Auto-refresh</span>
           </label>
           <button className="c-btn" onClick={loadLogs}>↻ Refresh</button>
+          {isAdmin && (
           <button className="c-btn-primary" onClick={exportCSV} disabled={logs.length === 0}>
             ⬇ Export CSV
           </button>
+          )}
         </div>
       </div>
 

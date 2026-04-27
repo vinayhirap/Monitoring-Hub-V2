@@ -1,3 +1,4 @@
+
 # app/aws/cloudwatch.py
 
 import boto3
@@ -9,18 +10,12 @@ def fetch_metric(
     metric_name: str,
     dimensions: list,
     statistic: str = "Average",
-    period: int = 300,
-    minutes: int = 5,
-    region: str = "ap-south-2",
+    period: int = 60,
+    minutes: int = 3,
+    region: str = None,
 ):
-    """
-    Generic CloudWatch metric fetcher
-    Used by EC2, RDS, ALB, API Gateway, etc.
-    """
-
     cw = boto3.client("cloudwatch", region_name=region)
-
-    end_time = datetime.utcnow()
+    end_time   = datetime.utcnow()
     start_time = end_time - timedelta(minutes=minutes)
 
     response = cw.get_metric_statistics(
@@ -32,8 +27,6 @@ def fetch_metric(
         Period=period,
         Statistics=[statistic],
     )
-
-    print("CW RAW RESPONSE:", response)
 
     datapoints = response.get("Datapoints", [])
     if not datapoints:

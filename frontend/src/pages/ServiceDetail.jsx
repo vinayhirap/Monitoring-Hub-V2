@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
-const BASE = "http://localhost:8000";
+const BASE = "";
 const OPTIONAL_SERVICES = new Set([]);
 
 const SERVICE_META = {
@@ -46,27 +46,38 @@ async function fetchService(accountId, service) {
 }
 
 async function fetchAccount(id) {
-  const res = await fetch(`${BASE}/admin/accounts/${id}`);
+  const res = await fetch(`${BASE}/api/admin/accounts/${id}`);
   if (!res.ok) throw new Error(String(res.status));
   return res.json();
 }
 
-async function fetchMetrics(service, row, region, hours) {
+// FIX: accountId param added — ELB was using undefined `id` from outer scope
+async function fetchMetrics(service, row, region, hours, accountId) {
   const h = `hours=${hours}`;
   const r = `region=${region}`;
   switch (service) {
     case "EC2":
       if (row.state !== "running") return null;
-      return fetch(`${BASE}/api/live/metrics/ec2/${row.instance_id}?${r}&${h}`).then(r => r.json());
+      return fetch(`${BASE}/api/live/metrics/ec2/${row.instance_id}?${r}&${h}`).then(res => res.json());
     case "EBS":
       if (row.state !== "in-use") return null;
-      return fetch(`${BASE}/api/live/metrics/ebs/${row.volume_id}?${r}&${h}`).then(r => r.json());
+      return fetch(`${BASE}/api/live/metrics/ebs/${row.volume_id}?${r}&${h}`).then(res => res.json());
     case "Lambda":
-      return fetch(`${BASE}/api/live/metrics/lambda/${row.function_name}?${r}&${h}`).then(r => r.json());
+      return fetch(`${BASE}/api/live/metrics/lambda/${row.function_name}?${r}&${h}`).then(res => res.json());
     case "RDS":
-      return fetch(`${BASE}/api/live/metrics/rds/${row.db_instance_id}?${r}&${h}`).then(r => r.json());
+      return fetch(`${BASE}/api/live/metrics/rds/${row.db_instance_id}?${r}&${h}`).then(res => res.json());
     case "S3":
-      return fetch(`${BASE}/api/live/metrics/s3/${row.bucket_name || row.name}?${h}`).then(r => r.json());
+      return fetch(`${BASE}/api/live/metrics/s3/${row.bucket_name || row.name}?${h}`).then(res => res.json());
+    case "ELB":
+      // FIX: was using `id` (undefined) — now correctly uses accountId param
+      return fetch(
+        `${BASE}/api/live/metrics/elb/${accountId}?lb_name=${encodeURIComponent(row.name)}&${r}&${h}`
+      ).then(res => res.json());
+    case "ECS":
+      // row here is a service object with cluster_name attached
+      return fetch(
+        `${BASE}/api/live/metrics/ecs/${accountId}?cluster_name=${encodeURIComponent(row.cluster_name)}&service_name=${encodeURIComponent(row.service_name)}&${r}&${h}`
+      ).then(res => res.json());
     default:
       return null;
   }
@@ -89,11 +100,19 @@ export default function ServiceDetail({ service }) {
   const [filter,     setFilter]     = useState("all");
   const [sortKey,    setSortKey]    = useState("name");
   const [timeRange,  setTimeRange]  = useState(6);
-  const notImplRef = useRef(false);
+  const [activeAlerts, setActiveAlerts] = useState([]);
+  const notImplRef  = useRef(false);
   const selectedRef = useRef(null);
 
   useEffect(() => {
-    fetchAccount(id).then(setAccount).catch(console.error);
+fetchAccount(id).then(setAccount).catch(err => {
+      console.error(err);
+      navigate("/overview");
+    });
+        fetch("/api/alerts")
+      .then(r => r.ok ? r.json() : [])
+      .then(a => setActiveAlerts((Array.isArray(a) ? a : []).filter(x => (x.status||"").toLowerCase() === "active")))
+      .catch(() => {});
   }, [id]);
 
   const loadRows = useCallback(async () => {
@@ -122,21 +141,21 @@ export default function ServiceDetail({ service }) {
     setRows([]);
     setError(null);
     loadRows();
-    const t = setInterval(() => { if (!notImplRef.current) loadRows(); }, 30000);
+    const t = setInterval(() => { if (!notImplRef.current) loadRows(); }, 15000);
     return () => clearInterval(t);
   }, [loadRows]);
 
   useEffect(() => {
     if (!selectedRef.current) return;
-    const row = selectedRef.current;
+    const row    = selectedRef.current;
     const region = row.region || account?.default_region || "ap-south-2";
     setMetrics(null);
     setMLoading(true);
-    fetchMetrics(service, row, region, timeRange)
+    fetchMetrics(service, row, region, timeRange, id)
       .then(data => setMetrics(data))
       .catch(console.error)
       .finally(() => setMLoading(false));
-  }, [timeRange, service, account]);
+  }, [timeRange, service, account, id]);
 
   async function selectRow(row) {
     selectedRef.current = row;
@@ -145,7 +164,7 @@ export default function ServiceDetail({ service }) {
     setMLoading(true);
     const region = row.region || account?.default_region || "ap-south-2";
     try {
-      const data = await fetchMetrics(service, row, region, timeRange);
+      const data = await fetchMetrics(service, row, region, timeRange, id);
       setMetrics(data);
       if (service === "EC2" && data?.cpu?.length > 0) {
         const latestCpu = data.cpu[data.cpu.length - 1].v;
@@ -170,7 +189,6 @@ export default function ServiceDetail({ service }) {
   }, {});
   const filterStates = ["all", ...Object.keys(stateCounts)];
 
-  // Sort: running/active first, then by name
   const STATE_PRIORITY = { running: 0, active: 0, "in-use": 0, available: 1, stopped: 2, terminated: 3 };
 
   const visible = rows
@@ -183,13 +201,11 @@ export default function ServiceDetail({ service }) {
       return true;
     })
     .sort((a, b) => {
-      // Always sort active/running first
       const sa = (a.state || a.status || "").toLowerCase();
       const sb = (b.state || b.status || "").toLowerCase();
       const pa = STATE_PRIORITY[sa] ?? 1;
       const pb = STATE_PRIORITY[sb] ?? 1;
       if (pa !== pb) return pa - pb;
-
       if (sortKey === "cpu")   return (b.cpu_utilization || 0) - (a.cpu_utilization || 0);
       if (sortKey === "size")  return (a.instance_type || a.size || "").localeCompare(b.instance_type || b.size || "");
       if (sortKey === "state") return sa.localeCompare(sb);
@@ -279,7 +295,7 @@ export default function ServiceDetail({ service }) {
                   </button>
                 </div>
               ) : (
-                <ServiceTable service={service} rows={visible} loading={loading} selected={selected} onSelect={selectRow} allRows={rows} />
+                <ServiceTable service={service} rows={visible} loading={loading} selected={selected} onSelect={selectRow} allRows={rows} activeAlerts={activeAlerts} />
               )}
             </div>
           </div>
@@ -318,11 +334,11 @@ function NotImplState({ service, meta, region }) {
   );
 }
 
-function ServiceTable({ service, rows, loading, selected, onSelect, allRows }) {
+function ServiceTable({ service, rows, loading, selected, onSelect, allRows, activeAlerts = [] }) {
   if (loading) return <table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">Loading…</td></tr></tbody></table>;
   if (rows.length === 0) return <table className="inst-table"><tbody><tr><td colSpan={9} className="tbl-empty">No resources found.</td></tr></tbody></table>;
   switch (service) {
-    case "EC2":    return <EC2Table    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} />;
+    case "EC2":    return <EC2Table    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} activeAlerts={activeAlerts} />;
     case "EBS":    return <EBSTable    rows={rows} selected={selected} onSelect={onSelect} allRows={allRows} />;
     case "RDS":    return <RDSTable    rows={rows} selected={selected} onSelect={onSelect} />;
     case "Lambda": return <LambdaTable rows={rows} selected={selected} onSelect={onSelect} />;
@@ -333,59 +349,66 @@ function ServiceTable({ service, rows, loading, selected, onSelect, allRows }) {
   }
 }
 
-// EC2 Table — removed NET IN / NET OUT columns, kept CPU + StatusCheckFailed indicator
-function EC2Table({ rows, selected, onSelect }) {
+function EC2Table({ rows, selected, onSelect, activeAlerts = [] }) {
+  function getRowAlert(instanceId) {
+    const a = activeAlerts.find(x => x.resource === instanceId);
+    return a ? (a.severity||"").toUpperCase() : null;
+  }
   return (
     <table className="inst-table">
       <thead>
         <tr>
-          <th>NAME / ID</th>
-          <th>TYPE</th>
-          <th>STATE</th>
-          <th>ZONE</th>
-          <th>CPU %</th>
-          <th>STATUS CHECK</th>
-          <th>UPTIME</th>
+          <th>NAME / ID</th><th>TYPE</th><th>STATE</th><th>ZONE</th>
+          <th>CPU %</th><th>STATUS CHECK</th><th>UPTIME</th>
         </tr>
       </thead>
-      <tbody>{rows.map(r => (
-        <tr key={r.instance_id} className={`inst-row ${selected?.instance_id === r.instance_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
-          <td>
-            <div className="inst-name">{r.name || r.instance_id}</div>
-            <div className="inst-id mono">{r.instance_id}</div>
-          </td>
-          <td className="mono">{r.instance_type}</td>
-          <td><StateBadge state={r.state} /></td>
-          <td className="mono small">{r.availability_zone}</td>
-          <td><CpuBar cpu={r.cpu_utilization} state={r.state} /></td>
-          <td>
-            {r.state === "running"
-              ? <StatusCheckBadge value={r.status_check_failed ?? 0} />
-              : <span className="mono small muted">—</span>}
-          </td>
-          <td className="mono small">{r.uptime_days ?? "—"}d</td>
-        </tr>
-      ))}</tbody>
+      <tbody>{rows.map(r => {
+        const alertSev = getRowAlert(r.instance_id);
+        return (
+          <tr key={r.instance_id} className={`inst-row ${selected?.instance_id === r.instance_id ? "inst-selected" : ""}`} onClick={() => onSelect(r)}>
+            <td>
+              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                {alertSev && (
+                  <span style={{
+                    fontSize:9, fontWeight:700, padding:"1px 5px", borderRadius:4,
+                    background: alertSev==="CRITICAL" ? "rgba(255,77,109,0.15)" : "rgba(255,201,64,0.15)",
+                    color: alertSev==="CRITICAL" ? "#ff4d6d" : "#ffc940",
+                    border: `1px solid ${alertSev==="CRITICAL" ? "rgba(255,77,109,0.3)" : "rgba(255,201,64,0.3)"}`,
+                    fontFamily:"var(--font-mono)",
+                  }}>
+                    {alertSev==="CRITICAL" ? "🔴" : "⚠"} {alertSev}
+                  </span>
+                )}
+                <div>
+                  <div className="inst-name">{r.name || r.instance_id}</div>
+                  <div className="inst-id mono">{r.instance_id}</div>
+                </div>
+              </div>
+            </td>
+            <td className="mono">{r.instance_type}</td>
+            <td><StateBadge state={r.state} /></td>
+            <td className="mono small">{r.availability_zone}</td>
+            <td><CpuBar cpu={r.cpu_utilization} state={r.state} /></td>
+            <td>
+              {r.state === "running"
+                ? <StatusCheckBadge value={r.status_check_failed ?? 0} />
+                : <span className="mono small muted">—</span>}
+            </td>
+            <td className="mono small">{r.uptime_days ?? "—"}d</td>
+          </tr>
+        );
+      })}</tbody>
     </table>
   );
 }
 
-// EBS Table — show instance name alongside instance ID in ATTACHED TO column
-function EBSTable({ rows, selected, onSelect, allRows }) {
-  // Build instance ID → name lookup from allRows if available (won't exist here, but future-proof)
-  // Backend should ideally return attached_instance_name; we use it if present, fallback to ID
+function EBSTable({ rows, selected, onSelect }) {
   return (
     <table className="inst-table">
       <thead>
         <tr>
-          <th>NAME / ID</th>
-          <th>TYPE</th>
-          <th>SIZE</th>
-          <th>STATE</th>
-          <th>ZONE</th>
-          <th>IOPS</th>
-          <th>ENCRYPTED</th>
-          <th>ATTACHED TO</th>
+          <th>NAME / ID</th><th>TYPE</th><th>SIZE</th><th>STATE</th>
+          <th>ZONE</th><th>IOPS</th><th>ENCRYPTED</th><th>ATTACHED TO</th>
         </tr>
       </thead>
       <tbody>{rows.map(r => (
@@ -403,7 +426,6 @@ function EBSTable({ rows, selected, onSelect, allRows }) {
           <td>
             {r.attached_to ? (
               <div>
-                {/* Show instance name if backend provides it, else show truncated ID */}
                 {r.attached_instance_name && (
                   <div className="inst-name" style={{ fontSize: 11 }}>{r.attached_instance_name}</div>
                 )}
@@ -493,8 +515,13 @@ function ELBTable({ rows, selected, onSelect }) {
 }
 
 function ECSTable({ rows, selected, onSelect }) {
+  // rows = array of cluster objects; flatten to service rows for table
   const allServices = rows.flatMap(cluster =>
-    (cluster.services || []).map(s => ({ ...s, cluster_name: cluster.cluster_name, region: cluster.region }))
+    (cluster.services || []).map(s => ({
+      ...s,
+      cluster_name: cluster.cluster_name,
+      region:       cluster.region,
+    }))
   );
   if (allServices.length === 0) {
     return (
@@ -507,13 +534,23 @@ function ECSTable({ rows, selected, onSelect }) {
   }
   return (
     <table className="inst-table">
-      <thead><tr><th>SERVICE NAME</th><th>CLUSTER</th><th>STATUS</th><th>LAUNCH</th><th>DESIRED</th><th>RUNNING</th><th>CPU %</th><th>MEM %</th></tr></thead>
+      <thead>
+        <tr>
+          <th>SERVICE NAME</th><th>CLUSTER</th><th>STATUS</th><th>LAUNCH</th>
+          <th>DESIRED</th><th>RUNNING</th><th>CPU %</th><th>MEM %</th>
+        </tr>
+      </thead>
       <tbody>
         {allServices.map((s, i) => (
-          <tr key={`${s.cluster_name}-${s.service_name}-${i}`}
-            className={`inst-row ${selected?.service_name === s.service_name ? "inst-selected" : ""}`}
-            onClick={() => onSelect(s)}>
-            <td><div className="inst-name">{s.service_name}</div><div className="inst-id mono">{s.task_definition}</div></td>
+          <tr
+            key={`${s.cluster_name}-${s.service_name}-${i}`}
+            className={`inst-row ${selected?.service_name === s.service_name && selected?.cluster_name === s.cluster_name ? "inst-selected" : ""}`}
+            onClick={() => onSelect(s)}
+          >
+            <td>
+              <div className="inst-name">{s.service_name}</div>
+              <div className="inst-id mono">{s.task_definition}</div>
+            </td>
             <td className="mono small">{s.cluster_name}</td>
             <td><StatusChip status={s.status} /></td>
             <td className="mono small">{s.launch_type}</td>
@@ -585,7 +622,6 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
           <div className="rel-item">
             <span className="rel-icon">🖥</span>
             <div className="rel-info">
-              {/* Show instance name prominently if available */}
               {row.attached_instance_name && (
                 <div className="rel-name">{row.attached_instance_name}</div>
               )}
@@ -625,11 +661,29 @@ function ResourceRelationships({ service, row, allRows, onSelectRelated }) {
     );
   }
 
+  if (service === "ECS" && row.cluster_name) {
+    return (
+      <div className="id-section">
+        <div className="id-section-title">🔗 CLUSTER</div>
+        <div className="rel-list">
+          <div className="rel-item">
+            <span className="rel-icon">📦</span>
+            <div className="rel-info">
+              <div className="rel-name">{row.cluster_name}</div>
+              <div className="rel-sub mono">Task: {row.task_definition} · {row.launch_type}</div>
+            </div>
+            <StatusChip status={row.status} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return null;
 }
 
 function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange, onTimeRangeChange, allRows, onClose, onSelectRelated }) {
-  const name = row.name || row.identifier || row.function_name || row.bucket_name || row.instance_id || "Resource";
+  const name = row.name || row.service_name || row.identifier || row.function_name || row.bucket_name || row.instance_id || "Resource";
 
   const noMetricsMsg = {
     EC2:    row.state === "stopped" ? "Instance stopped — start to see live metrics." : null,
@@ -637,13 +691,12 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
     RDS:    null,
     Lambda: null,
     S3:     null,
-    ELB:    "ELB metrics coming soon.",
-    ECS:    "ECS service metrics coming soon.",
+    ELB:    null,
+    ECS:    null,
   }[service];
 
   const rangLabel = TIME_RANGES.find(t => t.hours === timeRange)?.label || "6H";
 
-  // S3: compute static stats from row data since CW metrics often empty
   const s3SizeDisplay = row.size_bytes
     ? fmtBytes(row.size_bytes)
     : row.bucket_size_bytes
@@ -667,38 +720,48 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         ))}
       </div>
 
-      {/* S3 static info box — always show even when CW has no data */}
       {service === "S3" && (
         <div className="id-section">
           <div className="id-section-title">📦 BUCKET INFO</div>
           <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 0 }}>
-            <QuickStat label="Size" value={s3SizeDisplay} />
+            <QuickStat label="Size"    value={s3SizeDisplay} />
             <QuickStat label="Objects" value={String(s3ObjCount)} />
             <QuickStat label="Created" value={row.creation_date ? shortDate(row.creation_date) : "—"} />
           </div>
           {(s3SizeDisplay === "—" && s3ObjCount === "—") && (
             <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
-              ℹ S3 size/object metrics require CloudWatch Storage Lens or S3 bucket metrics to be enabled. CW reports daily, not real-time.
+              ℹ S3 size/object metrics require CloudWatch Storage Lens or S3 bucket metrics enabled. CW reports daily, not real-time.
             </div>
           )}
         </div>
       )}
 
-      {/* Lambda static info */}
       {service === "Lambda" && (
         <div className="id-section">
           <div className="id-section-title">⚡ FUNCTION DETAILS</div>
           <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
-            <QuickStat label="Handler"     value={row.handler      || "—"} mono />
-            <QuickStat label="Description" value={row.description  || "—"} />
+            <QuickStat label="Handler"       value={row.handler      || "—"} mono />
+            <QuickStat label="Description"   value={row.description  || "—"} />
             <QuickStat label="Last Modified" value={row.last_modified ? shortDate(row.last_modified) : "—"} />
-            <QuickStat label="Code Size"   value={row.code_size ? fmtBytes(row.code_size) : "—"} />
+            <QuickStat label="Code Size"     value={row.code_size ? fmtBytes(row.code_size) : "—"} />
           </div>
           {!metrics && !mLoading && (
             <div style={{ fontSize: 11, color: "rgba(99,130,190,0.5)", marginTop: 8, fontStyle: "italic" }}>
-              ℹ Lambda invocation metrics appear only after the function is invoked. No recent invocations detected.
+              ℹ Lambda invocation metrics appear only after the function is invoked.
             </div>
           )}
+        </div>
+      )}
+
+      {service === "ECS" && (
+        <div className="id-section">
+          <div className="id-section-title">📦 SERVICE DETAILS</div>
+          <div className="id-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 0 }}>
+            <QuickStat label="Desired"  value={String(row.desired_count  ?? "—")} />
+            <QuickStat label="Running"  value={String(row.running_count  ?? "—")} color={row.running_count === row.desired_count ? "green" : "yellow"} />
+            <QuickStat label="Pending"  value={String(row.pending_count  ?? "—")} />
+            <QuickStat label="Launch"   value={row.launch_type || "—"} mono />
+          </div>
         </div>
       )}
 
@@ -742,71 +805,98 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
         </div>
 
         {noMetricsMsg ? (
-          <div className="id-no-metrics">{noMetricsMsg}</div>
+          <div style={{
+            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+            padding:"40px 20px", gap:12, textAlign:"center",
+          }}>
+            <div style={{ fontSize:32 }}>🔧</div>
+            <div style={{ fontWeight:700, fontSize:14, color:"var(--text-primary)" }}>No Metrics Available</div>
+            <div style={{ fontSize:12, color:"var(--text-muted)", maxWidth:280, lineHeight:1.6 }}>{noMetricsMsg}</div>
+          </div>
         ) : mLoading ? (
           <div className="id-loading">⏳ Fetching CloudWatch data…</div>
         ) : metrics ? (
           <div className="charts-grid">
-            {service === "EC2" && <>
+            {service === "EC2" && (
               <div className="chart-full">
-                {/* CPU chart — threshold line is the alert threshold, NOT a tooltip value */}
                 <MetricChart title="CPU Utilization %" data={metrics.cpu} color="#00c7ff" unit="%" threshold={85} thresholdLabel="alert threshold" timeRange={rangLabel} />
               </div>
-              {/* Removed Disk Read / Disk Write per request */}
-            </>}
+            )}
 
             {service === "EBS" && <>
               <MetricChart title="Read Ops/s"      data={metrics.read_ops}      color="#38bdf8" unit=" ops" timeRange={rangLabel} />
               <MetricChart title="Write Ops/s"     data={metrics.write_ops}     color="#a78bfa" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="Read Bytes"      data={metrics.read_bytes}    color="#00e5a0" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Write Bytes"     data={metrics.write_bytes}   color="#fbbf24" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Queue Length"    data={metrics.queue_length}  color="#ff4d6d" unit="" threshold={5} timeRange={rangLabel} />
-              <MetricChart title="Burst Balance %" data={metrics.burst_balance} color="#00c7ff" unit="%" threshold={20} timeRange={rangLabel} />
+              <MetricChart title="Read Bytes"      data={metrics.read_bytes}    color="#00e5a0" unit="B"    timeRange={rangLabel} />
+              <MetricChart title="Write Bytes"     data={metrics.write_bytes}   color="#fbbf24" unit="B"    timeRange={rangLabel} />
+              <MetricChart title="Queue Length"    data={metrics.queue_length}  color="#ff4d6d" unit=""     threshold={5} timeRange={rangLabel} />
+              <MetricChart title="Burst Balance %" data={metrics.burst_balance} color="#00c7ff" unit="%"    threshold={20} timeRange={rangLabel} />
             </>}
 
             {service === "Lambda" && <>
-              <MetricChart title="Invocations"     data={metrics.invocations} color="#00e5a0" unit="" timeRange={rangLabel} />
-              <MetricChart title="Errors"          data={metrics.errors}      color="#ff4d6d" unit="" threshold={5} timeRange={rangLabel} />
+              <MetricChart title="Invocations"     data={metrics.invocations} color="#00e5a0" unit=""   timeRange={rangLabel} />
+              <MetricChart title="Errors"          data={metrics.errors}      color="#ff4d6d" unit=""   threshold={5} timeRange={rangLabel} />
               <div className="chart-full">
                 <MetricChart title="Duration (ms)" data={metrics.duration}    color="#00c7ff" unit="ms" threshold={8000} timeRange={rangLabel} />
               </div>
-              <MetricChart title="Throttles"       data={metrics.throttles}   color="#ffc940" unit="" timeRange={rangLabel} />
-              <MetricChart title="Concurrent Exec" data={metrics.concurrent}  color="#a78bfa" unit="" timeRange={rangLabel} />
+              <MetricChart title="Throttles"       data={metrics.throttles}   color="#ffc940" unit=""   timeRange={rangLabel} />
+              <MetricChart title="Concurrent Exec" data={metrics.concurrent}  color="#a78bfa" unit=""   timeRange={rangLabel} />
             </>}
 
             {service === "RDS" && <>
               <div className="chart-full">
                 <MetricChart title="CPU Utilization %" data={metrics.cpu} color="#00c7ff" unit="%" threshold={85} timeRange={rangLabel} />
               </div>
-              <MetricChart title="DB Connections"   data={metrics.db_connections}   color="#a78bfa" unit="" timeRange={rangLabel} />
-              <MetricChart title="Free Memory"      data={metrics.freeable_memory}  color="#f472b6" unit="B" timeRange={rangLabel} />
-              <MetricChart title="Read IOPS"        data={metrics.read_iops}        color="#00e5a0" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="Write IOPS"       data={metrics.write_iops}       color="#fbbf24" unit=" ops" timeRange={rangLabel} />
-              <MetricChart title="Read Latency"     data={metrics.read_latency}     color="#38bdf8" unit="s" threshold={0.02} timeRange={rangLabel} />
-              <MetricChart title="Write Latency"    data={metrics.write_latency}    color="#e879f9" unit="s" threshold={0.02} timeRange={rangLabel} />
+              <MetricChart title="DB Connections"  data={metrics.db_connections}  color="#a78bfa" unit=""    timeRange={rangLabel} />
+              <MetricChart title="Free Memory"     data={metrics.freeable_memory} color="#f472b6" unit="B"   timeRange={rangLabel} />
+              <MetricChart title="Read IOPS"       data={metrics.read_iops}       color="#00e5a0" unit=" ops" timeRange={rangLabel} />
+              <MetricChart title="Write IOPS"      data={metrics.write_iops}      color="#fbbf24" unit=" ops" timeRange={rangLabel} />
+              <MetricChart title="Read Latency"    data={metrics.read_latency}    color="#38bdf8" unit="s"   threshold={0.02} timeRange={rangLabel} />
+              <MetricChart title="Write Latency"   data={metrics.write_latency}   color="#e879f9" unit="s"   threshold={0.02} timeRange={rangLabel} />
             </>}
 
             {service === "S3" && <>
               <div className="chart-full">
-                <MetricChart title="Bucket Size (bytes)" data={metrics?.bucket_size||[]}   color="#fbbf24" unit="B"  timeRange={rangLabel} />
+                <MetricChart title="Bucket Size (bytes)" data={metrics?.bucket_size   || []} color="#fbbf24" unit="B" timeRange={rangLabel} />
               </div>
               <div className="chart-full">
-                <MetricChart title="Object Count"        data={metrics?.object_count||[]}  color="#00e5a0" unit=""   timeRange={rangLabel} />
+                <MetricChart title="Object Count"        data={metrics?.object_count  || []} color="#00e5a0" unit=""  timeRange={rangLabel} />
               </div>
-              <MetricChart title="All Requests"          data={metrics?.all_requests||[]}  color="#00c7ff" unit=""   timeRange={rangLabel} />
-              <MetricChart title="GET Requests"          data={metrics?.get_requests||[]}  color="#a78bfa" unit=""   timeRange={rangLabel} />
-              <MetricChart title="PUT Requests"          data={metrics?.put_requests||[]}  color="#38bdf8" unit=""   timeRange={rangLabel} />
-              <MetricChart title="4XX Errors"            data={metrics?.errors_4xx||[]}    color="#ffc940" unit=""   timeRange={rangLabel} />
-              <MetricChart title="5XX Errors"            data={metrics?.errors_5xx||[]}    color="#ff4d6d" unit=""   threshold={5} timeRange={rangLabel} />
-              <MetricChart title="Bytes Downloaded"      data={metrics?.bytes_download||[]} color="#f472b6" unit="B" timeRange={rangLabel} />
+              <MetricChart title="All Requests"          data={metrics?.all_requests  || []} color="#00c7ff" unit=""  timeRange={rangLabel} />
+              <MetricChart title="GET Requests"          data={metrics?.get_requests  || []} color="#a78bfa" unit=""  timeRange={rangLabel} />
+              <MetricChart title="PUT Requests"          data={metrics?.put_requests  || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
+              <MetricChart title="4XX Errors"            data={metrics?.errors_4xx    || []} color="#ffc940" unit=""  timeRange={rangLabel} />
+              <MetricChart title="5XX Errors"            data={metrics?.errors_5xx    || []} color="#ff4d6d" unit=""  threshold={5} timeRange={rangLabel} />
+              <MetricChart title="Bytes Downloaded"      data={metrics?.bytes_download|| []} color="#f472b6" unit="B" timeRange={rangLabel} />
             </>}
 
             {service === "ELB" && <>
-              <MetricChart title="Request Count"   data={metrics?.requests || []}   color="#00c7ff" unit="" timeRange={rangLabel} />
-              <MetricChart title="5XX Errors"      data={metrics?.errors_5xx || []} color="#ff4d6d" unit="" threshold={20} timeRange={rangLabel} />
               <div className="chart-full">
-                <MetricChart title="Latency (ms)"  data={metrics?.latency || []}    color="#fbbf24" unit="ms" threshold={500} timeRange={rangLabel} />
+                <MetricChart title="Request Count"           data={metrics?.requests           || []} color="#00c7ff" unit=""  timeRange={rangLabel} />
               </div>
+              <MetricChart title="5XX Errors (Target)"       data={metrics?.errors_5xx         || []} color="#ff4d6d" unit=""  threshold={20} timeRange={rangLabel} />
+              <MetricChart title="4XX Errors (Target)"       data={metrics?.errors_4xx         || []} color="#ffc940" unit=""  threshold={50} timeRange={rangLabel} />
+              <MetricChart title="5XX Errors (ELB)"          data={metrics?.errors_elb_5xx     || []} color="#f472b6" unit=""  threshold={5}  timeRange={rangLabel} />
+              <div className="chart-full">
+                <MetricChart title="Target Response Time (s)" data={metrics?.latency           || []} color="#fbbf24" unit="s" threshold={0.5} timeRange={rangLabel} />
+              </div>
+              <MetricChart title="Healthy Hosts"             data={metrics?.healthy_hosts      || []} color="#00e5a0" unit=""  timeRange={rangLabel} />
+              <MetricChart title="Unhealthy Hosts"           data={metrics?.unhealthy_hosts    || []} color="#ff4d6d" unit=""  threshold={1} timeRange={rangLabel} />
+              <MetricChart title="Active Connections"        data={metrics?.active_connections || []} color="#a78bfa" unit=""  timeRange={rangLabel} />
+              <MetricChart title="New Connections"           data={metrics?.new_connections    || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
+            </>}
+
+            {service === "ECS" && <>
+              <div className="chart-full">
+                <MetricChart title="CPU Utilization %"    data={metrics?.cpu_utilization    || []} color="#34d399" unit="%" threshold={85} timeRange={rangLabel} />
+              </div>
+              <div className="chart-full">
+                <MetricChart title="Memory Utilization %" data={metrics?.mem_utilization    || []} color="#a78bfa" unit="%" threshold={85} timeRange={rangLabel} />
+              </div>
+              <MetricChart title="Running Tasks"          data={metrics?.running_task_count || []} color="#00e5a0" unit=""  timeRange={rangLabel} />
+              <MetricChart title="Pending Tasks"          data={metrics?.pending_task_count || []} color="#ffc940" unit=""  timeRange={rangLabel} />
+              <MetricChart title="Desired Tasks"          data={metrics?.desired_task_count || []} color="#38bdf8" unit=""  timeRange={rangLabel} />
+              <MetricChart title="CPU Reserved"           data={metrics?.cpu_reserved       || []} color="#f472b6" unit=""  timeRange={rangLabel} />
+              <MetricChart title="Memory Reserved"        data={metrics?.mem_reserved       || []} color="#fbbf24" unit=""  timeRange={rangLabel} />
             </>}
           </div>
         ) : (
@@ -855,13 +945,6 @@ function ServiceDetailPanel({ service, row, metrics, mLoading, region, timeRange
           border: 1px solid rgba(0,229,160,0.25); border-radius: 4px;
           padding: 2px 7px; white-space: nowrap; flex-shrink: 0;
         }
-        .charts-grid .chart-box {
-          background: rgba(8,14,26,0.6); border: 1px solid rgba(99,130,190,0.1);
-          border-radius: 8px; padding: 8px 10px;
-        }
-        .charts-grid .chart-title  { font-size: 10px; }
-        .charts-grid .chart-latest { font-size: 12px; }
-        /* Status check badge */
         .sc-ok   { font-size: 10px; font-weight: 700; color: #00e5a0; font-family: monospace; }
         .sc-fail { font-size: 10px; font-weight: 700; color: #ff4d6d; font-family: monospace; background: rgba(255,77,109,0.1); border: 1px solid rgba(255,77,109,0.25); border-radius: 4px; padding: 2px 7px; }
       `}</style>
@@ -898,6 +981,7 @@ function awsDeepLink(service, row, region) {
     case "Lambda": return `${base}/lambda/home?region=${region}#/functions/${row.function_name}`;
     case "S3":     return `https://s3.console.aws.amazon.com/s3/buckets/${row.bucket_name || row.name}`;
     case "ELB":    return `${base}/ec2/home?region=${region}#LoadBalancers:search=${row.name}`;
+    case "ECS":    return `${base}/ecs/home?region=${region}#/clusters/${row.cluster_name}/services/${row.service_name}`;
     default:       return base;
   }
 }
@@ -910,6 +994,7 @@ function detailSubline(service, row) {
     case "Lambda": return `${row.runtime} · ${row.memory_size ?? "—"} MB · ${row.timeout}s timeout`;
     case "S3":     return `${row.region || ""} · Created ${row.creation_date ? shortDate(row.creation_date) : "—"}`;
     case "ELB":    return `${row.type} · ${row.scheme}`;
+    case "ECS":    return `${row.cluster_name} · ${row.task_definition} · ${row.launch_type}`;
     default:       return "";
   }
 }
@@ -923,10 +1008,10 @@ function detailStats(service, row) {
       { label: "Uptime",     value: `${row.uptime_days ?? "—"}d` },
     ];
     case "EBS": return [
-      { label: "State",   value: row.state,          color: row.state === "in-use" ? "green" : "blue" },
-      { label: "Size",    value: `${row.size_gb} GB` },
-      { label: "Type",    value: row.volume_type,    mono: true },
-      { label: "IOPS",    value: row.iops ?? "—" },
+      { label: "State",  value: row.state,          color: row.state === "in-use" ? "green" : "blue" },
+      { label: "Size",   value: `${row.size_gb} GB` },
+      { label: "Type",   value: row.volume_type,    mono: true },
+      { label: "IOPS",   value: row.iops ?? "—" },
     ];
     case "RDS": return [
       { label: "Status",   value: row.status,          color: row.status === "available" ? "green" : "yellow" },
@@ -950,6 +1035,12 @@ function detailStats(service, row) {
       { label: "Type",   value: row.type   || "—" },
       { label: "Scheme", value: row.scheme || "—" },
       { label: "AZs",    value: Array.isArray(row.availability_zones) ? row.availability_zones.length : "—" },
+    ];
+    case "ECS": return [
+      { label: "Status",   value: row.status        || "—", color: row.status === "ACTIVE" ? "green" : "yellow" },
+      { label: "CPU %",    value: `${(row.cpu_utilization || 0).toFixed(1)}%`, color: (row.cpu_utilization || 0) > 75 ? "red" : "green" },
+      { label: "Mem %",    value: `${(row.mem_utilization || 0).toFixed(1)}%`, color: (row.mem_utilization || 0) > 75 ? "red" : "green" },
+      { label: "Running",  value: `${row.running_count ?? "—"} / ${row.desired_count ?? "—"}` },
     ];
     default: return [];
   }
@@ -997,15 +1088,7 @@ function MetricChart({ title, data, color, unit, threshold, thresholdLabel, time
             itemStyle={{ color }}
           />
           {threshold && (
-            <Line
-              type="monotone"
-              dataKey="threshold"
-              stroke="#ff4d6d"
-              strokeDasharray="4 4"
-              dot={false}
-              strokeWidth={1}
-              legendType="none"
-            />
+            <Line type="monotone" dataKey="threshold" stroke="#ff4d6d" strokeDasharray="4 4" dot={false} strokeWidth={1} legendType="none" />
           )}
           <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} activeDot={{ r: 3, fill: color }} />
         </LineChart>

@@ -2,7 +2,7 @@
 import { createContext, useContext, useState } from "react";
 
 const AuthContext = createContext(null);
-const BASE = "http://localhost:8000";
+const BASE = "";
 const STORAGE_KEY = "aslops_auth";
 
 export function AuthProvider({ children }) {

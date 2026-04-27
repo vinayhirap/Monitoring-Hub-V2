@@ -21,8 +21,7 @@ export default function Login() {
     }
     setLoading(true);
     setError("");
-    // Tiny artificial delay so it feels like a real auth check
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 400));
     const ok = login(username.trim(), password);
     setLoading(false);
     if (ok) {
@@ -34,19 +33,15 @@ export default function Login() {
 
   return (
     <div className="login-root">
-      {/* animated background grid */}
       <div className="login-grid" aria-hidden="true">
         {Array.from({ length: 80 }).map((_, i) => (
           <div key={i} className="login-grid-cell" />
         ))}
       </div>
-
-      {/* glow blobs */}
       <div className="login-blob login-blob-1" aria-hidden="true" />
       <div className="login-blob login-blob-2" aria-hidden="true" />
 
       <div className="login-card">
-        {/* Logo / brand */}
         <div className="login-brand">
           <div className="login-logo">
             <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
@@ -78,7 +73,7 @@ export default function Login() {
                 id="username"
                 type="text"
                 className="login-input"
-                placeholder="e.g. admin"
+                placeholder="Enter username"
                 value={username}
                 onChange={e => { setUsername(e.target.value); setError(""); }}
                 autoComplete="username"
@@ -101,7 +96,7 @@ export default function Login() {
                 id="password"
                 type={showPw ? "text" : "password"}
                 className="login-input"
-                placeholder="••••••••"
+                placeholder="Enter password"
                 value={password}
                 onChange={e => { setPassword(e.target.value); setError(""); }}
                 autoComplete="current-password"
@@ -154,23 +149,6 @@ export default function Login() {
             )}
           </button>
         </form>
-
-        {/* Demo hint */}
-        <div className="login-hint">
-          <div className="login-hint-title">Demo credentials</div>
-          <div className="login-hint-row">
-            <span className="login-hint-role admin">Admin</span>
-            <code>admin</code> / <code>admin123</code>
-          </div>
-            <div className="login-hint-row">
-            <span className="login-hint-role editor">Editor</span>
-            <code>editor</code> / <code>editor123</code>
-          </div>
-          <div className="login-hint-row">
-            <span className="login-hint-role viewer">Viewer</span>
-            <code>viewer</code> / <code>viewer123</code>
-          </div>
-        </div>
       </div>
     </div>
   );

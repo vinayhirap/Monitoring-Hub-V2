@@ -2,7 +2,7 @@
 // Singleton per channel — prevents duplicate connections across components
 import { useEffect, useRef, useState } from "react";
 
-const WS_BASE     = "ws://localhost:8000/ws";
+const WS_BASE = `ws://${window.location.host}/ws`;
 const _sockets    = {};          // channel → WebSocket
 const _listeners  = {};          // channel → Set of {onMsg, onStatus}
 const _reconnect  = {};          // channel → timeout handle
@@ -18,7 +18,7 @@ function getOrCreate(channel) {
     notifyStatus(channel, true);
     socket._ping = setInterval(() => {
       if (socket.readyState === WebSocket.OPEN) socket.send("ping");
-    }, 25000);
+    }, 10000);
   };
 
   socket.onmessage = (e) => {
@@ -35,7 +35,7 @@ function getOrCreate(channel) {
     delete _sockets[channel];
     // Reconnect after 4s
     clearTimeout(_reconnect[channel]);
-    _reconnect[channel] = setTimeout(() => getOrCreate(channel), 4000);
+    _reconnect[channel] = setTimeout(() => getOrCreate(channel), 1000);
   };
 
   socket.onerror = () => socket.close();
@@ -71,7 +71,7 @@ export function useWebSocket(channel) {
     }
 
     // Create socket if needed (delayed to avoid StrictMode double-fire)
-    const t = setTimeout(() => getOrCreate(channel), 150);
+    const t = setTimeout(() => getOrCreate(channel), 50);
 
     return () => {
       clearTimeout(t);

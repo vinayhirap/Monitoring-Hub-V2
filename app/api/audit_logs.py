@@ -71,25 +71,3 @@ def get_audit_logs(
 
     return [_serialize_row(r) for r in rows]
 
-
-@router.get("/audit-logs/stats")
-def audit_log_stats():
-    """Summary stats for the audit log — used by compliance dashboard."""
-    conn   = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    cursor.execute("""
-        SELECT
-            COUNT(*)                                          AS total,
-            COUNT(DISTINCT actor)                            AS unique_actors,
-            COUNT(DISTINCT action)                           AS unique_actions,
-            MAX(created_at)                                  AS latest_event,
-            SUM(CASE WHEN created_at >= NOW() - INTERVAL 1 DAY  THEN 1 ELSE 0 END) AS last_24h,
-            SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY  THEN 1 ELSE 0 END) AS last_7d
-        FROM audit_logs
-    """)
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    return _serialize_row(row) if row else {}

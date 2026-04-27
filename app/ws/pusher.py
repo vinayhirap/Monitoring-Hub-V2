@@ -66,7 +66,7 @@ async def redis_listener():
                     pass
 
         if not _stop:
-            await asyncio.sleep(10)
+            await asyncio.sleep(2)
 
 
 def stop_listener():

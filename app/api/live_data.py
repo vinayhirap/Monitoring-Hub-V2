@@ -14,7 +14,8 @@ from app.aws.collector_direct import (
     _get_ebs_metric_series,
     _get_lambda_metric_series,
     _get_rds_metric_series,
-    DEFAULT_REGION,
+    _get_elb_metric_series,
+    _get_ecs_metric_series,
 )
 from app.db import get_connection
 import datetime
@@ -26,9 +27,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/live", tags=["Live Data"])
 
-# Cache: 300s matches CloudWatch update interval
+# Cache: 30s for near-real-time updates
 _accounts_cache: dict = {"data": None, "ts": 0}
-CACHE_TTL = 300  # seconds
+CACHE_TTL = 60   # seconds — near-real-time
 
 
 def _serialize(obj):
@@ -45,12 +46,13 @@ def _get_db_accounts():
     conn   = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT id, account_name, account_id,
-               default_region, status, created_at, last_synced_at
-        FROM aws_accounts
-        WHERE status = 'active'
-        ORDER BY created_at DESC
-    """)
+            SELECT id, account_name, account_id,
+                default_region, status,
+                created_at, last_synced_at
+            FROM aws_accounts
+            WHERE status = 'active'
+            ORDER BY created_at DESC
+        """)
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -70,10 +72,6 @@ def _get_db_account(account_db_id: int) -> dict:
 
 
 def _get_active_alert_resources() -> set:
-    """
-    Returns set of resource_ids that have active/unresolved alerts.
-    Used to determine account health status.
-    """
     try:
         conn   = get_connection()
         cursor = conn.cursor(dictionary=True)
@@ -105,22 +103,18 @@ def live_accounts():
 
     accounts = _get_db_accounts()
 
-    # Fetch alert resource sets ONCE for all accounts — not per account
     critical_resources, warning_resources = _get_active_alert_resources()
 
     def process_account(acc):
-        region  = acc.get("default_region") or DEFAULT_REGION
-        # get_account_summary uses its own 300s _cache — all collectors cached
+        region  = acc.get("default_region")
         summary = get_account_summary(region)
         running = summary.get("ec2_running", 0)
         total   = summary.get("ec2_total",   0)
         avg_cpu = summary.get("ec2_avg_cpu", 0)
 
-        # Get EC2 instance IDs for this account to cross-check alerts
-        ec2_list    = summary.get("instances", [])
+        ec2_list     = summary.get("instances", [])
         instance_ids = {i["instance_id"] for i in ec2_list}
 
-        # Health = alert-driven (most accurate), fallback to CPU
         has_critical = bool(critical_resources & instance_ids)
         has_warning  = bool(warning_resources  & instance_ids)
 
@@ -135,9 +129,8 @@ def live_accounts():
         else:
             health = "healthy"
 
-        # Count unhealthy resources for donut
-        unhealthy_ids = (critical_resources | warning_resources) & instance_ids
-        healthy_count  = running - len(unhealthy_ids)
+        unhealthy_ids   = (critical_resources | warning_resources) & instance_ids
+        healthy_count   = running - len(unhealthy_ids)
         unhealthy_count = len(unhealthy_ids)
 
         services = []
@@ -168,8 +161,8 @@ def live_accounts():
             "account_id":       acc["account_id"],
             "region":           region,
             "status":           health,
-            "environment":      "PROD",
-            "owner_team":       "Cloud Team",
+            "environment":      acc.get("environment", "PROD"),
+            "owner_team":       acc.get("owner_team", acc.get("team", "")),
             "ec2_total":        total,
             "ec2_running":      running,
             "ec2_stopped":      summary.get("ec2_stopped", 0),
@@ -177,10 +170,11 @@ def live_accounts():
             "rds_total":        summary.get("rds_total",    0),
             "lambda_total":     summary.get("lambda_total", 0),
             "s3_total":         summary.get("s3_total",     0),
+            "elb_total":        summary.get("elb_total",    0),
+            "ecs_total":        summary.get("ecs_total",    0),
             "avg_cpu":          avg_cpu,
             "alerts":           0,
             "instance_count":   total,
-            # Donut data: health-based not running/stopped
             "healthy_resources":   max(healthy_count, 0),
             "unhealthy_resources": unhealthy_count,
             "services":         services,
@@ -189,7 +183,6 @@ def live_accounts():
         })
 
     result = []
-    # Parallel across accounts — each account's collectors already use _cache
     with ThreadPoolExecutor(max_workers=min(len(accounts), 8)) as ex:
         futures = {ex.submit(process_account, acc): acc for acc in accounts}
         for f in as_completed(futures):
@@ -198,7 +191,6 @@ def live_accounts():
             except Exception as e:
                 logger.error(f"Account processing error: {e}")
 
-    # Sort: critical first, then warning, then healthy
     status_order = {"critical": 0, "warning": 1, "healthy": 2}
     result.sort(key=lambda a: status_order.get(a.get("status", "healthy"), 9))
 
@@ -206,62 +198,52 @@ def live_accounts():
     return result
 
 
-@router.get("/account/{account_db_id}")
-def live_account_detail(account_db_id: int):
-    acc     = _get_db_account(account_db_id)
-    region  = acc.get("default_region") or DEFAULT_REGION
-    summary = get_account_summary(region)
-    return _serialize({**acc, **summary})
-
-
-# ── Resource list endpoints ───────────────────────────────────
-
 @router.get("/ec2/{account_db_id}")
 def live_ec2(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_ec2_instances(region))
 
 
 @router.get("/ebs/{account_db_id}")
 def live_ebs(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_ebs_volumes(region))
 
 
 @router.get("/rds/{account_db_id}")
 def live_rds(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_rds_instances(region))
 
 
 @router.get("/lambda/{account_db_id}")
 def live_lambda(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_lambda_functions(region))
 
 
 @router.get("/s3/{account_db_id}")
 def live_s3(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_s3_buckets(region))
 
 
 @router.get("/elb/{account_db_id}")
 def live_elb(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_elb(region))
 
 
 @router.get("/ecs/{account_db_id}")
 def live_ecs(account_db_id: int):
     acc    = _get_db_account(account_db_id)
-    region = acc.get("default_region") or DEFAULT_REGION
+    region = acc.get("default_region") 
     return _serialize(collect_ecs_clusters(region))
 
 
@@ -270,7 +252,7 @@ def live_ecs(account_db_id: int):
 @router.get("/metrics/ec2/{instance_id}")
 def live_ec2_metrics(
     instance_id: str,
-    region: str = Query(DEFAULT_REGION),
+    region: str = Query(None),
     hours: int  = Query(6),
 ):
     return get_ec2_metric_series(instance_id, region, hours)
@@ -279,7 +261,7 @@ def live_ec2_metrics(
 @router.get("/metrics/ebs/{volume_id}")
 def live_ebs_metrics(
     volume_id: str,
-    region: str = Query(DEFAULT_REGION),
+    region: str = Query(None),
     hours: int  = Query(6),
 ):
     return _get_ebs_metric_series(volume_id, region, hours)
@@ -288,7 +270,7 @@ def live_ebs_metrics(
 @router.get("/metrics/rds/{db_id}")
 def live_rds_metrics(
     db_id: str,
-    region: str = Query(DEFAULT_REGION),
+    region: str = Query(None),
     hours: int  = Query(6),
 ):
     return _get_rds_metric_series(db_id, region, hours)
@@ -297,7 +279,7 @@ def live_rds_metrics(
 @router.get("/metrics/lambda/{function_name}")
 def live_lambda_metrics(
     function_name: str,
-    region: str = Query(DEFAULT_REGION),
+    region: str = Query(None),
     hours: int  = Query(6),
 ):
     return _get_lambda_metric_series(function_name, region, hours)
@@ -309,3 +291,36 @@ def live_s3_metrics(
     hours: int = Query(24),
 ):
     return get_s3_metric_series(bucket_name, hours)
+
+
+@router.get("/metrics/elb/{account_db_id}")
+def live_elb_metrics(
+    account_db_id: int,
+    lb_name: str = Query(..., description="Load balancer name"),
+    region: str  = Query(None),
+    hours: int   = Query(6),
+):
+    """
+    ELB CloudWatch metrics for a specific load balancer by name.
+    Frontend calls: /api/live/metrics/elb/{accountId}?lb_name=<name>&region=<r>&hours=<h>
+    """
+    acc = _get_db_account(account_db_id)
+    resolved_region = region or acc.get("default_region") 
+    return _get_elb_metric_series(lb_name, resolved_region, hours)
+
+
+@router.get("/metrics/ecs/{account_db_id}")
+def live_ecs_metrics(
+    account_db_id: int,
+    cluster_name: str  = Query(..., description="ECS cluster name"),
+    service_name: str  = Query(None, description="ECS service name (optional — omit for cluster-level)"),
+    region: str        = Query(None),
+    hours: int         = Query(6),
+):
+    """
+    ECS CloudWatch metrics for a cluster or specific service.
+    Frontend calls: /api/live/metrics/ecs/{accountId}?cluster_name=<c>&service_name=<s>&region=<r>&hours=<h>
+    """
+    acc = _get_db_account(account_db_id)
+    resolved_region = region or acc.get("default_region")
+    return _get_ecs_metric_series(cluster_name, service_name, resolved_region, hours)
